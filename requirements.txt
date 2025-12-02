@@ -1,0 +1,11 @@
+# Minimal requirements — expand as needed
+numpy
+web3
+torch
+torchvision
+tinyec
+eth-abi
+eth-utils
+flask
+flask-cors
+requests

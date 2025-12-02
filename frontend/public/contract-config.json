@@ -1,0 +1,10 @@
+{
+  "TaskManager": {
+    "address": "0xDa12879fF7659c06299B5aDEeD562556f0c7CA8b"
+  },
+  "network": {
+    "rpcUrl": "http://127.0.0.1:7545",
+    "chainId": 5777
+  }
+}
+

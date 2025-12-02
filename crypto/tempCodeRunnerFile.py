@@ -1,0 +1,1 @@
+from tinyec import registry
