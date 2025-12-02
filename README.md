@@ -174,7 +174,7 @@ Notes
 Project scaffold for HealChain: a federated learning system integrated with blockchain for task publishing, escrow, and miner incentives.
 
 Repository structure (scaffolded):
-
+````
 HealChain/
 ├── blockchain/
 │   ├── contracts/
@@ -207,7 +207,7 @@ HealChain/
 │
 ├── requirements.txt
 └── README.md
-
+````
 Next steps:
 - Implement contract tests and deployment scripts
 - Fill in crypto primitives in `crypto/`
