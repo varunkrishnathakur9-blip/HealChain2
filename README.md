@@ -176,37 +176,77 @@ Project scaffold for HealChain: a federated learning system integrated with bloc
 Repository structure (scaffolded):
 ````
 HealChain/
-├── blockchain/
-│   ├── contracts/
-│   │   ├── EscrowContract.sol
-│   │   ├── TaskContract.sol
-│   │   └── migrations/
-│   ├── deployment/
-│   └── tests/
-│
-├── crypto/
-│   ├── ndd_fe.py
-│   └── dgc.py
-│
-├── federated_layer/
-│   ├── models/
-│   │   └── image_detector.py
-│   ├── clients/
-│   │   └── miner.py
-│   ├── aggregator/
-│   │   └── aggregator.py
-│   └── task_publisher/
-│       └── publisher.py
-│
-├── integration/
-│   ├── web3_client.py
-│   └── simulation_runner.py
-│
-├── data/
-│   └── chest_xray_dataset/
-│
-├── requirements.txt
-└── README.md
+├─ blockchain/
+│  ├─ contracts/
+│  │  ├─ EscrowContract.sol
+│  │  ├─ TaskContract.sol
+│  │  └─ migrations/
+│  │     ├─ deploy.cjs
+│  │     ├─ deploy.js
+│  │     ├─ deploy_taskmanager.cjs
+│  │     └─ deploy_taskmanager.js
+│  ├─ deployment/
+│  │  └─ contract_config.json
+│  └─ tests/
+│     ├─ TaskManager.test.cjs
+│     ├─ RewardDistribution.test.cjs
+│     └─ TaskContract.test.cjs
+├─ crypto/
+│  ├─ ndd_fe.py
+│  ├─ dgc.py
+│  └─ tempCodeRunnerFile.py
+├─ federated_layer/
+│  ├─ models/
+│  │  ├─ image_detector.py
+│  │  └─ tempCodeRunnerFile.py
+│  ├─ clients/
+│  │  └─ miner.py
+│  ├─ aggregator/
+│  │  └─ aggregator.py
+│  └─ task_publisher/
+│     └─ publisher.py
+├─ frontend/
+│  ├─ components/
+│  │  ├─ AggregatorDashboard.jsx
+│  │  ├─ ClientDashboard.jsx
+│  │  ├─ ParticipantsDashboard.jsx
+│  │  ├─ PublisherDashboard.jsx
+│  │  └─ SignIn.jsx
+│  ├─ public/
+│  │  ├─ TaskManager.json
+│  │  └─ contract-config.json
+│  ├─ src/
+│  │  ├─ App.jsx
+│  │  ├─ index.css
+│  │  └─ main.jsx
+│  ├─ index.html
+│  ├─ vite.config.js
+│  ├─ package.json
+│  └─ package-lock.json
+├─ integration/
+│  ├─ listener.py
+│  ├─ sim_server.py
+│  ├─ smoke_post.py
+│  ├─ simulation_runner.py
+│  ├─ web3_client.py
+│  └─ tempCodeRunnerFile.py
+├─ data/
+│  └─ chest_xray_dataset/
+│     └─ README.md
+├─ scripts/
+│  ├─ check_contracts.py
+│  ├─ deploy.cjs
+│  └─ deploy.js
+├─ DYNAMIC_RBAC_README.md
+├─ TEST_RESULTS.md
+├─ TEST_UPDATE_SUMMARY.md
+├─ requirements.txt
+├─ hardhat.config.js
+├─ package.json
+├─ package-lock.json
+├─ simulation_results.json
+└─ README.md
+
 ````
 Next steps:
 - Implement contract tests and deployment scripts
