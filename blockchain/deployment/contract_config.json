@@ -1,19 +1,19 @@
 {
   "TaskContract": {
-    "address": "0xf20853272243589e20B643d2ef8E674f5854C6F3",
+    "address": "0x20283Ad447Ac2Be06817eDF55C977300863d603d",
     "abiFile": "../../artifacts/blockchain/contracts/TaskContract.sol/TaskContract.json"
   },
   "EscrowContract": {
-    "address": "0x08CCee22227e87cEF9B4c9dc91dFFcB5edFC8e5D",
+    "address": "0x649C54925638970e6EEA37eE4Ea2182Ac565B4Ad",
     "abiFile": "../../artifacts/blockchain/contracts/EscrowContract.sol/EscrowContract.json"
   },
   "network": {
     "rpcUrl": "http://127.0.0.1:7545",
-    "chainId": 5777
+    "chainId": 1337
   },
   "note": "Update addresses after deployment. Run deployment script and update this file.",
   "TaskManager": {
-    "address": "0x78C7690F5a1b1D4fbA6367109C7d341a5Cd6c60C",
+    "address": "0x10330FDacB10b7bC8f9514B7C7CceFFa73931Bc4",
     "abiFile": "../../artifacts/blockchain/contracts/TaskManager.sol/TaskManager.json"
   }
 }
