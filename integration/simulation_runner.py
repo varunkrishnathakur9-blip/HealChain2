@@ -164,6 +164,15 @@ def run_healchain_simulation(publisher, aggregator, miners, pk_A, ndd_fe, web3_c
     )
     aggregator.set_functional_key(sk_FE)
     pk_TP = publisher.pk_TP
+    # Ensure the off-chain Aggregator instance uses the PoS-selected address so
+    # on-chain `onlyAggregator` checks pass when publishing the final block.
+    # The selected address is expected to be one of the node's unlocked accounts
+    # (created in `setup_environment`) so node-managed signing will succeed.
+    try:
+        print(f"[SIM] Setting off-chain Aggregator.address = {agg_addr_selected}")
+        aggregator.address = agg_addr_selected
+    except Exception as e:
+        print(f"[SIM] Warning: failed to set aggregator address: {e}")
     
     print(f"\n--- M2: Aggregator {agg_addr_selected} Selected ---")
 
