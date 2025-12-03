@@ -1,10 +1,10 @@
 {
   "TaskContract": {
-    "address": "0x20283Ad447Ac2Be06817eDF55C977300863d603d",
+    "address": "0x2197E77Fd8325f92c3bE14C2091353bbC9a744b2",
     "abiFile": "../../artifacts/blockchain/contracts/TaskContract.sol/TaskContract.json"
   },
   "EscrowContract": {
-    "address": "0x649C54925638970e6EEA37eE4Ea2182Ac565B4Ad",
+    "address": "0x1cB6f6c306d91a3f83f7822273c2aD33D46d25FB",
     "abiFile": "../../artifacts/blockchain/contracts/EscrowContract.sol/EscrowContract.json"
   },
   "network": {
@@ -13,7 +13,7 @@
   },
   "note": "Update addresses after deployment. Run deployment script and update this file.",
   "TaskManager": {
-    "address": "0x10330FDacB10b7bC8f9514B7C7CceFFa73931Bc4",
+    "address": "0x27DCCa9Fa478Bf1F6b09Cc7F9951918e11D5dE58",
     "abiFile": "../../artifacts/blockchain/contracts/TaskManager.sol/TaskManager.json"
   }
 }

@@ -31,7 +31,7 @@ export default defineConfig({
     allowedHosts: [
       'localhost',
       '127.0.0.1',
-      'strap-filename-hdtv-office.trycloudflare.com'
+      'act-mrs-households-rebates.trycloudflare.com'
     ]
   }
 })
