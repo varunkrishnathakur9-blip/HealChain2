@@ -47,6 +47,25 @@ contract TaskManager {
         address indexed publisher,
         string newDataHash
     );
+
+    /**
+     * @notice Emitted when a miner applies for a task with an IPFS proof
+     */
+    event MinerApplied(
+        uint256 indexed taskId,
+        address indexed miner,
+        string ipfsCid
+    );
+
+    // --- Miner Applications ---
+    struct MinerApplication {
+        address miner;
+        string ipfsCid;
+        uint256 stake;
+    }
+
+    // taskId => applications
+    mapping(uint256 => MinerApplication[]) public taskApplications;
     
     // --- Modifiers ---
     
@@ -121,6 +140,26 @@ contract TaskManager {
         
         // INTERACTIONS: Emit event
         emit TaskUpdated(taskId, msg.sender, newDataHash);
+    }
+
+    /**
+     * @notice Apply for a published task by providing an IPFS CID that contains miner capability proof
+     * @param taskId The task to apply for
+     * @param ipfsCid CID string pointing to JSON metadata uploaded to IPFS
+     */
+    function applyForTask(uint256 taskId, string memory ipfsCid) public {
+        require(taskExists(taskId), "TaskManager: Task does not exist");
+        require(bytes(ipfsCid).length > 0, "TaskManager: ipfsCid required");
+
+        // For simplicity, stake is set to 0 here; off-chain or another contract can set/verify stake
+        MinerApplication memory app = MinerApplication({
+            miner: msg.sender,
+            ipfsCid: ipfsCid,
+            stake: 0
+        });
+
+        taskApplications[taskId].push(app);
+        emit MinerApplied(taskId, msg.sender, ipfsCid);
     }
     
     // --- View Functions ---

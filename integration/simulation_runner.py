@@ -151,14 +151,16 @@ def run_healchain_simulation(publisher, aggregator, miners, pk_A, ndd_fe, web3_c
             default_texp=texp_default
         )
     
-    # Gather miner information
-    participants_info = [(m.address, m.pk_i) for m in miners]
-    
+    # --- Miner Discovery Phase: miners upload capability proofs to IPFS ---
+    miner_responses = []
+    for m in miners:
+        resp = m.generate_task_response(task_ID)
+        miner_responses.append(resp)
+
     # --- M2: Miner Selection & Key Derivation ---
-    # Pass the aggregator instance's address so the on-chain aggregator matches
-    # the off-chain Aggregator signer used later when publishing the block.
+    # Let TP verify miner proofs and run PoS selection (no forced aggregator override)
     agg_addr_selected, sk_FE, weights_y = publisher.setup_round(
-        task_ID, participants_info, round_ctr=0, aggregator_address=aggregator.address
+        task_ID, miner_responses, round_ctr=0
     )
     aggregator.set_functional_key(sk_FE)
     pk_TP = publisher.pk_TP

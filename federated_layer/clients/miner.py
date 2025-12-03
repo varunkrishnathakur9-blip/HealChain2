@@ -14,6 +14,7 @@ if project_root not in sys.path:
 
 from crypto.dgc import DGC, calculate_contribution_score
 from integration.web3_client import Web3Client
+from integration.ipfs_handler import IPFSHandler
 
 class Miner:
     def __init__(self, data_set, address: str, ndd_fe_instance, private_key: str = None):
@@ -28,6 +29,11 @@ class Miner:
         
         self.dgc_tool = DGC(compression_threshold_tau=0.9)
         self.web3_client = Web3Client()
+        # IPFS handler for publishing miner capability proofs
+        try:
+            self.ipfs = IPFSHandler()
+        except Exception:
+            self.ipfs = None
         self.residual = None
         
         # Store reveal data for M7
@@ -170,3 +176,31 @@ class Miner:
             tx_info = {'status': 'failed', 'error': str(e)}
 
         return tx_info
+
+    # New: generate_task_response uploads capability proof to IPFS
+    def generate_task_response(self, task_ID: bytes) -> dict:
+        """Generates miner capability proof, uploads to IPFS and returns response packet.
+
+        Returns: { 'address': address, 'pk': pk_i, 'proof_cid': cid }
+        """
+        metadata = {
+            'miner_address': self.address,
+            'compute_power': float(random.uniform(1.0, 10.0)),
+            'dataset_size': int(random.randint(100, 10000)),
+        }
+        try:
+            if self.ipfs is None:
+                # attempt to instantiate if previously failed
+                self.ipfs = IPFSHandler()
+            cid = self.ipfs.upload_json(metadata)
+            print(f"[Miner {self.address[:8]}..] Uploaded proof to IPFS: {cid}")
+        except Exception as e:
+            print(f"[Miner {self.address[:8]}..] IPFS upload failed: {e}")
+            cid = None
+
+        return {
+            'address': self.address,
+            'pk': self.pk_i,
+            'proof_cid': cid,
+            'metadata': metadata
+        }

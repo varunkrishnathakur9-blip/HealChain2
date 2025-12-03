@@ -57,6 +57,8 @@ const PublisherDashboard = ({ contractAddress, contractABI }) => {
     
     /// @notice Contract instance
     const [contract, setContract] = useState(null);
+    const [applicants, setApplicants] = useState([]);
+    const [selectedAggregator, setSelectedAggregator] = useState(null);
     
     // --- Effects ---
     
@@ -272,6 +274,62 @@ const PublisherDashboard = ({ contractAddress, contractABI }) => {
             setLoading(false);
         }
     };
+
+    // --- New: Fetch applicants and run a client-side PoS selection ---
+    const fetchApplicants = async (taskId) => {
+        if (!contract) return setError('Contract not initialized');
+        try {
+            setLoading(true);
+            setError(null);
+            const taskIdInt = parseInt(taskId, 10);
+            const events = await contract.queryFilter(contract.filters.MinerApplied(taskIdInt));
+            const apps = [];
+            for (const ev of events) {
+                try {
+                    const miner = ev.args.miner;
+                    const cid = ev.args.ipfsCid;
+                    // fetch metadata from gateway
+                    let meta = null;
+                    try {
+                        const r = await fetch(`http://127.0.0.1:8080/ipfs/${cid}`);
+                        meta = await r.json();
+                    } catch (e) {
+                        meta = null;
+                    }
+                    apps.push({ miner, cid, meta });
+                } catch (e) {
+                    // ignore parse errors
+                }
+            }
+            setApplicants(apps);
+        } catch (e) {
+            setError('Failed to fetch applicants: ' + e.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const selectAggregator = async () => {
+        if (!applicants || applicants.length === 0) return setError('No applicants to select from');
+        // Compute stakes (try to use tokenContract if available, otherwise random)
+        const stakes = [];
+        for (const a of applicants) {
+            let stake = Math.floor(Math.random() * 1000) + 100; // fallback
+            stakes.push(stake);
+        }
+        const total = stakes.reduce((s, v) => s + v, 0);
+        const probs = stakes.map(s => s / total);
+        // Weighted random
+        const r = Math.random();
+        let acc = 0;
+        let idx = 0;
+        for (let i = 0; i < probs.length; i++) {
+            acc += probs[i];
+            if (r <= acc) { idx = i; break; }
+        }
+        const winner = applicants[idx];
+        setSelectedAggregator({ winner, stake: stakes[idx] });
+    };
     
     // --- Render ---
     
@@ -393,6 +451,30 @@ const PublisherDashboard = ({ contractAddress, contractABI }) => {
                     <strong>Success:</strong> {success}
                 </div>
             )}
+            {/* Applicants Section */}
+            <div style={{ marginTop: 16 }}>
+                <h4>Applicants</h4>
+                <div style={{ marginBottom: 8 }}>
+                    <input id="fetchTaskId" placeholder="Task ID" style={styles.input} />
+                    <button onClick={() => {
+                        const taskId = document.getElementById('fetchTaskId').value;
+                        fetchApplicants(taskId);
+                    }}>Fetch Applicants</button>
+                    <button onClick={selectAggregator} style={{ marginLeft: 8 }}>Select Aggregator (PoS)</button>
+                </div>
+                {applicants && applicants.length > 0 && (
+                    <ul>
+                        {applicants.map((a, i) => (
+                            <li key={i}>{a.miner} - CID: {a.cid} - dataset: {a.meta ? a.meta.dataset_size : 'n/a'}</li>
+                        ))}
+                    </ul>
+                )}
+                {selectedAggregator && (
+                    <div style={{ marginTop: 8 }}>
+                        <strong>Selected Aggregator:</strong> {selectedAggregator.winner.miner} (stake: {selectedAggregator.stake})
+                    </div>
+                )}
+            </div>
         </div>
     );
 };

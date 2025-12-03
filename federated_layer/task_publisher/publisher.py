@@ -7,6 +7,7 @@ from eth_utils import keccak
 # Import your modules (adjust paths if necessary)
 from integration.web3_client import Web3Client 
 from crypto.ndd_fe import NDD_FE 
+from integration.ipfs_handler import IPFSHandler
 
 class TaskPublisher:
     def __init__(self, initial_model: np.ndarray, account_address: str, ndd_fe_instance: NDD_FE):
@@ -17,6 +18,11 @@ class TaskPublisher:
         self.address = account_address
         self.W0 = initial_model
         self.web3_client = Web3Client() # Initialize connection
+        # IPFS helper for task metadata storage
+        try:
+            self.ipfs = IPFSHandler()
+        except Exception:
+            self.ipfs = None
 
     def _get_stake_for_address(self, addr: str) -> int:
         """
@@ -60,6 +66,17 @@ class TaskPublisher:
         3. Deposit Reward (on-chain escrow)
         """
         
+        # Upload task metadata to IPFS (so miners can reference it)
+        try:
+            if self.ipfs is None:
+                self.ipfs = IPFSHandler()
+            meta = {'D': D, 'L': L, 'publisher': self.address}
+            task_meta_cid = self.ipfs.upload_json(meta)
+            print(f"[TP] Uploaded task metadata to IPFS: {task_meta_cid}")
+        except Exception as e:
+            print(f"[TP] IPFS upload failed for task metadata: {e}")
+            task_meta_cid = None
+
         # 1. Prepare Accuracy Requirement
         # Convert to basis points (e.g., 92.5% -> 9250) for integer compatibility on-chain
         acc_req_basis_points = int(acc_req * 100) 
@@ -82,13 +99,34 @@ class TaskPublisher:
         reward_wei = self.web3_client.w3.to_wei(reward_R, 'ether')
         
         print("[TP] Submitting tpCommit transaction...")
-        self.web3_client.send_transaction(
-            self.web3_client.task_contract,
-            'tpCommit', 
-            task_ID, 
-            reward_wei, 
-            commit_hash
-        )
+        # If contract supports a metadata CID, include it when present.
+        try:
+            if task_meta_cid:
+                self.web3_client.send_transaction(
+                    self.web3_client.task_contract,
+                    'tpCommit',
+                    task_ID,
+                    reward_wei,
+                    commit_hash,
+                    task_meta_cid
+                )
+            else:
+                self.web3_client.send_transaction(
+                    self.web3_client.task_contract,
+                    'tpCommit', 
+                    task_ID, 
+                    reward_wei, 
+                    commit_hash
+                )
+        except Exception:
+            # Fallback to original call if contract ABI doesn't accept metadata
+            self.web3_client.send_transaction(
+                self.web3_client.task_contract,
+                'tpCommit', 
+                task_ID, 
+                reward_wei, 
+                commit_hash
+            )
 
         # 4. Call EscrowContract.deposit (Algorithm 1, Step 4)
         print(f"[TP] Depositing {reward_R} ETH to Escrow...")
@@ -113,7 +151,7 @@ class TaskPublisher:
     # M2: Miner Selection and Key Derivation (Algorithm 2)
     def setup_round(self, 
                     task_ID: bytes,
-                    participants_info: List[Tuple[str, object]], # (address, pk_miner_point)
+                    miner_responses: list,  # list of dicts: {address, pk, proof_cid, metadata}
                     round_ctr: int,
                     aggregator_address: str = None):
         """
@@ -123,58 +161,58 @@ class TaskPublisher:
         3. Register Aggregator on-chain
         """
         
-        # 1. PoS Selection (Simplified for Simulation)
-        # In a real PoS, we'd check stake balances. Here we deterministically pick index 0.
-        # If an `aggregator_address` override is provided, use it so the on-chain
-        # aggregator matches the off-chain Aggregator instance used in simulation.
-        if aggregator_address:
-            aggregator_addr = aggregator_address
-            # Try to find the corresponding pk in participants_info if present
-            aggregator_pk = None
-            for addr, pk in participants_info:
-                if addr.lower() == aggregator_addr.lower():
-                    aggregator_pk = pk
-                    break
-            print(f"[TP] Manually Selected Aggregator: {aggregator_addr}")
-        else:
-            # --- ACTUAL POS LOGIC START ---
-            print("\n[TP] --- Executing Algorithm 2: PoS Selection ---")
-            
-            stakes = []
-            addresses = []
-            public_keys = []
-            
-            print(f"[TP] Calculating selection probabilities based on stake:")
-            for addr, pk in participants_info:
-                # Attempt to read stake from token contract; fallback to random if unavailable
-                stake = self._get_stake_for_address(addr)
-                
-                stakes.append(stake)
-                addresses.append(addr)
-                public_keys.append(pk)
-            
-            total_stake = sum(stakes)
-            if total_stake == 0:
-                # Fallback to uniform probabilities if all stakes are zero
-                probabilities = [1.0 / len(stakes)] * len(stakes)
-            else:
-                probabilities = [s / total_stake for s in stakes]
-            
-            # Log probabilities for verification
-            for i, addr in enumerate(addresses):
-                print(f"  Miner {addr[:8]}... | Stake: {stakes[i]} | Prob: {probabilities[i]:.4f}")
+        # 1. PoS Selection: accept miner responses, verify proofs, then weight by stake
+        print("\n[TP] --- Executing Algorithm 2: PoS Selection (with IPFS proofs) ---")
 
-            # Select ONE Aggregator based on the calculated probabilities
-            # "Aggregator = Random.Choice(Miners, Weights=Stakes)"
-            selected_index = np.random.choice(len(participants_info), p=probabilities)
-            
-            aggregator_addr = addresses[selected_index]
-            aggregator_pk = public_keys[selected_index]
-            
-            print(f"✅ [TP] PoS Winner (Aggregator): {aggregator_addr[:10]}...")
-            # --- ACTUAL POS LOGIC END ---
+        # Filter and verify miner responses
+        valid_miners = []  # tuples (address, pk, stake)
+        for resp in miner_responses:
+            addr = resp.get('address')
+            pk = resp.get('pk')
+            cid = resp.get('proof_cid')
+            # Verify proof cid (if present)
+            is_valid = True
+            try:
+                if cid and self.ipfs is not None:
+                    proof = self.ipfs.get_json(cid)
+                    is_valid = self.verify_miner_proof(proof)
+                else:
+                    # If no CID available, mark invalid
+                    is_valid = False
+            except Exception as e:
+                print(f"[TP] Warning: failed to verify proof for {addr}: {e}")
+                is_valid = False
+
+            if not is_valid:
+                print(f"  [TP] Rejected miner {addr[:8]}... due to failed proof")
+                continue
+
+            # Read stake and collect
+            stake = self._get_stake_for_address(addr)
+            valid_miners.append((addr, pk, stake))
+
+        if len(valid_miners) == 0:
+            raise Exception("No valid miners available after proof verification")
+
+        addresses = [m[0] for m in valid_miners]
+        public_keys = [m[1] for m in valid_miners]
+        stakes = [m[2] for m in valid_miners]
+
+        total_stake = sum(stakes)
+        if total_stake == 0:
+            probabilities = [1.0 / len(stakes)] * len(stakes)
+        else:
+            probabilities = [s / total_stake for s in stakes]
+
+        for i, addr in enumerate(addresses):
+            print(f"  Miner {addr[:8]}... | Stake: {stakes[i]} | Prob: {probabilities[i]:.4f}")
+
+        selected_index = np.random.choice(len(addresses), p=probabilities)
+        aggregator_addr = addresses[selected_index]
+        aggregator_pk = public_keys[selected_index]
+        print(f"✅ [TP] PoS Winner (Aggregator): {aggregator_addr[:10]}...")
         
-        miner_pks = [pk for addr, pk in participants_info]
+        miner_pks = public_keys
 
 
         # 2. Update TaskContract with Aggregator (Algorithm 2, Line 16)
@@ -208,6 +246,22 @@ class TaskPublisher:
         # 5. Secure Delivery (Algorithm 2, Line 21)
         # In this simulation, we return it. In production, this is encrypted with Aggregator's PK.
         return aggregator_addr, sk_FE, weights_y
+
+    def verify_miner_proof(self, proof: dict, min_dataset_size: int = 500) -> bool:
+        """Verify a miner's capability proof fetched from IPFS.
+
+        Basic checks: dataset_size above a threshold and compute_power present.
+        """
+        try:
+            if not proof:
+                return False
+            ds = int(proof.get('dataset_size', 0))
+            cp = float(proof.get('compute_power', 0.0))
+            if ds >= min_dataset_size and cp > 0:
+                return True
+            return False
+        except Exception:
+            return False
 
     # M7: TP Reveal (Algorithm 7, Function 1)
     def reveal_task(self, task_ID: bytes, acc_req: float, nonce_TP: int):
