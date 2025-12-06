@@ -52,7 +52,21 @@ contract MockTaskContract is ITaskContract {
         distributedCalled = false; // Reset for new test
     }
 
-    // Updated getter to return the aggregator address
+    // Backwards-compatible overload: older tests/tools may call setTaskData
+    // with the signature (address publisher, uint256 rewardAmount, address[] participants, uint256[] revealedScores, uint256 totalRevealedScore, bool isPaymentEligible)
+    // In that case, record aggregator as address(0) and forward to the new setter.
+    function setTaskData(
+        address _publisher,
+        uint256 _rewardAmount,
+        address[] memory _participants,
+        uint256[] memory _revealedScores,
+        uint256 _totalRevealedScore,
+        bool _isPaymentEligible
+    ) public {
+        setTaskData(_publisher, address(0), _rewardAmount, _participants, _revealedScores, _totalRevealedScore, _isPaymentEligible);
+    }
+
+    // Primary getter that returns aggregator (full shape)
     function getTaskData(bytes32) external view override returns (
         address, address, uint256, address[] memory, uint256[] memory, uint256, bool
     ) {
@@ -63,6 +77,35 @@ contract MockTaskContract is ITaskContract {
             participants, 
             revealedScores, 
             totalRevealedScore, 
+            isPaymentEligible
+        );
+    }
+
+    // Expose the same full-shape getter under the newer name used by Escrow
+    function getTaskDataWithAggregator(bytes32 taskID) external view returns (
+        address, address, uint256, address[] memory, uint256[] memory, uint256, bool
+    ) {
+        return (
+            publisher,
+            aggregator,
+            rewardAmount,
+            participants,
+            revealedScores,
+            totalRevealedScore,
+            isPaymentEligible
+        );
+    }
+
+    // Backwards-compatible legacy getter (without aggregator) for older callers/tests
+    function getTaskDataLegacy(bytes32) external view returns (
+        address, uint256, address[] memory, uint256[] memory, uint256, bool
+    ) {
+        return (
+            publisher,
+            rewardAmount,
+            participants,
+            revealedScores,
+            totalRevealedScore,
             isPaymentEligible
         );
     }

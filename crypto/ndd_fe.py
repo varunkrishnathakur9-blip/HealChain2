@@ -41,8 +41,9 @@ class NDD_FE:
         """
         sk_FE = 0
         for i, pk_i in enumerate(pk_miners):
-            # 1. Compute Shared Secret (CDH): g^(s_TP * s_i) = sk_TP * pk_i
-            shared_point = sk_TP * pk_i
+            # 1. Compute Shared Secret (CDH): g^(s_TP * s_i) = pk_i * sk_TP
+            # Ensure we perform Point * scalar (point.__mul__(scalar))
+            shared_point = pk_i * sk_TP
             
             # 2. Derive r_i via Hashing (Eq 3.2 / 3.4)
             hash_input = f"{shared_point.x}|{ctr}|{task_ID.hex()}".encode()
@@ -67,12 +68,13 @@ class NDD_FE:
         """
         # 1. Derive random mask r_i (must match Aggregator's derivation)
         # Shared secret: sk_miner * pk_TP (Same as sk_TP * pk_miner)
-        shared_point = sk_miner * pk_TP
+        # Shared secret: pk_TP * sk_miner (Point * scalar)
+        shared_point = pk_TP * sk_miner
         hash_input = f"{shared_point.x}|{ctr}|{task_ID.hex()}".encode()
         r_i = int(hashlib.sha256(hash_input).hexdigest(), 16) % self.n
 
-        # Mask Point (r_i * pk_TP)
-        mask_point = r_i * pk_TP
+        # Mask Point (pk_TP * r_i)
+        mask_point = pk_TP * r_i
 
         ciphertext_list = []
         
@@ -102,7 +104,8 @@ class NDD_FE:
         
         # 1. Calculate the Global Noise Mask
         # Mask = sk_FE * pk_TP (Derived from Eq 3.5 denominator)
-        global_mask_point = sk_FE * pk_TP
+        # Global mask: pk_TP * sk_FE (Point * scalar)
+        global_mask_point = pk_TP * sk_FE
         
         # Compute negative mask for subtraction: -Mask = (n-1) * Mask
         neg_mask_point = (self.n - 1) * global_mask_point

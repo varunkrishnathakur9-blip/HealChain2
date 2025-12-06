@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ethers } from 'ethers';
+import { API_ENDPOINTS, apiCall } from '../src/config/api';
 
 /**
  * @component PublisherDashboard
@@ -58,7 +59,14 @@ const PublisherDashboard = ({ contractAddress, contractABI }) => {
     /// @notice Contract instance
     const [contract, setContract] = useState(null);
     const [applicants, setApplicants] = useState([]);
+    const [selectedApplicants, setSelectedApplicants] = useState([]);
+    const [simStatus, setSimStatus] = useState(null);
+    
     const [selectedAggregator, setSelectedAggregator] = useState(null);
+    const [taskContractAddr, setTaskContractAddr] = useState('');
+    const [taskContractABIJSON, setTaskContractABIJSON] = useState(null);
+    const [taskIdBytes32, setTaskIdBytes32] = useState('');
+    const [lastPublishedTaskId, setLastPublishedTaskId] = useState(null);
     
     // --- Effects ---
     
@@ -209,7 +217,7 @@ const PublisherDashboard = ({ contractAddress, contractABI }) => {
             // Wait for transaction confirmation
             const receipt = await tx.wait();
             
-            // Extract taskId from event logs
+            // Extract taskId from event logs (robust parsing + fallback)
             const taskPublishedEvent = receipt.logs.find(
                 log => {
                     try {
@@ -220,48 +228,73 @@ const PublisherDashboard = ({ contractAddress, contractABI }) => {
                     }
                 }
             );
-            
+
             let taskId = null;
             if (taskPublishedEvent) {
-                const parsed = contract.interface.parseLog(taskPublishedEvent);
-                taskId = parsed.args.taskId.toString();
+                try {
+                    const parsed = contract.interface.parseLog(taskPublishedEvent);
+                    taskId = parsed.args && parsed.args.taskId ? parsed.args.taskId.toString() : null;
+                } catch (e) {
+                    taskId = null;
+                }
             }
-            
+
+            // Fallback: derive from counter if available on contract
+            if (!taskId && contract && typeof contract.getTaskIdCounter === 'function') {
+                try {
+                    const counter = await contract.getTaskIdCounter();
+                    const asBigInt = typeof counter === 'bigint' ? counter : BigInt(counter.toString());
+                    const derived = asBigInt - BigInt(1);
+                    if (derived >= 0) taskId = derived.toString();
+                } catch (e) {
+                    // ignore
+                }
+            }
+
+            if (taskId) setLastPublishedTaskId(taskId);
+
             setSuccess(
                 `Task published successfully! Transaction: ${receipt.hash}${taskId ? ` | Task ID: ${taskId}` : ''}`
             );
             setDataHash(''); // Clear input field
 
-            // Trigger backend simulation runner (best-effort)
+            // Try to automatically start the backend simulation (best-effort).
+            // If the sim server isn't running, this will fail gracefully and
+            // the publisher can still start it manually via the UI.
             try {
-                fetch('http://127.0.0.1:5000/run-simulation', {
+                const simBody = {
+                    publisher: currentAccount,
+                    dataHash: dataHash,
+                    initialModelLink: initialModelLink,
+                    datasetReq: datasetReq,
+                    acc_req: parseFloat(accReq) || 85,
+                    reward: parseFloat(reward) || 1,
+                    texp: parseInt(texp) || 86400,
+                    nonceTP: nonceTP || 0,
+                    L: taskLabel || '',
+                    taskId: taskId || null
+                };
+
+                apiCall(API_ENDPOINTS.RUN_SIMULATION, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        taskId,
-                        txHash: receipt.hash,
-                        dataHash,
-                        initialModelLink,
-                        datasetReq,
-                        acc_req: accReq,
-                        reward: reward,
-                        texp: texp,
-                        nonceTP: nonceTP,
-                        D: datasetReq,
-                        L: taskLabel,
-                        publisher: currentAccount
-                    })
-                }).then(r => {
-                    if (r.ok) {
-                        setSuccess(s => s + ' Simulation started on backend.');
-                    } else {
-                        setError('Failed to start simulation on backend.');
-                    }
-                }).catch(e => setError('Failed to contact simulation server: ' + e.message));
+                    body: JSON.stringify(simBody)
+                }).then(() => {
+                    setSuccess(prev => prev + ' — Simulation started on backend.');
+                }).catch((e) => {
+                    // likely no sim server running; tell the user how to start it
+                    setError('Could not reach local simulation server. Start it with `python integration\\sim_server.py` or use the listener.');
+                });
+
+            // Broadcast the published task to other frontend components (dashboards)
+            try {
+                const detail = { taskId: taskId || null, dataHash: dataHash, publisher: currentAccount };
+                window.dispatchEvent(new CustomEvent('task_published', { detail }));
             } catch (e) {
-                // noop
+                // ignore dispatch errors
             }
-            setDataHash(''); // Clear input field
+            } catch (e) {
+                // swallow any errors from the best-effort call
+            }
             
         } catch (err) {
             // Handle user rejection
@@ -275,35 +308,78 @@ const PublisherDashboard = ({ contractAddress, contractABI }) => {
         }
     };
 
+    // Explicitly start the backend simulation for a published task
+    const startSimulation = async (taskId) => {
+        if (!taskId) return setError('Task ID required to start simulation');
+        try {
+            setLoading(true);
+            setError(null);
+            await apiCall(API_ENDPOINTS.RUN_SIMULATION, {
+                method: 'POST',
+                body: JSON.stringify({ taskId })
+            });
+            setSuccess('Simulation started on backend.');
+        } catch (e) {
+            setError('Failed to start simulation on backend: ' + e.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
     // --- New: Fetch applicants and run a client-side PoS selection ---
     const fetchApplicants = async (taskId) => {
         if (!contract) return setError('Contract not initialized');
         try {
             setLoading(true);
             setError(null);
-            const taskIdInt = parseInt(taskId, 10);
-            const events = await contract.queryFilter(contract.filters.MinerApplied(taskIdInt));
+
+            // First try to fetch applicants from the local sim server (preferred)
+            try {
+                const data = await apiCall(API_ENDPOINTS.GET_APPLICANTS);
+                if (data && data.applicants) {
+                    // Normalize applicants into { miner, cid, meta }
+                    const apps = data.applicants.map(a => ({
+                        miner: a.address,
+                        cid: a.proof_cid,
+                        meta: a.metadata
+                    }));
+                    setApplicants(apps);
+                    return;
+                }
+            } catch (e) {
+                // If sim server not available or returns non-OK, fall back to on-chain logs
+            }
+
+            // Fallback: query on-chain MinerApplied events using provider.getLogs
+            if (!provider) return setError('Provider not initialized for on-chain fallback');
+            const taskIdStr = taskId.toString();
+            const signature = 'MinerApplied(uint256,address,string)';
+            const topic0 = ethers.keccak256(ethers.toUtf8Bytes(signature));
+            const logs = await provider.getLogs({ address: contractAddress, topics: [topic0] });
             const apps = [];
-            for (const ev of events) {
+            for (const log of logs) {
                 try {
-                    const miner = ev.args.miner;
-                    const cid = ev.args.ipfsCid;
-                    // fetch metadata from gateway
+                    const parsed = contract.interface.parseLog(log);
+                    const args = parsed.args || {};
+                    const evTaskId = args.taskId ? args.taskId.toString() : (args[0] ? args[0].toString() : null);
+                    if (evTaskId !== taskIdStr) continue;
+                    const miner = args.miner || args[1];
+                    const cid = args.ipfsCid || args[2];
                     let meta = null;
-                    try {
-                        const r = await fetch(`http://127.0.0.1:8080/ipfs/${cid}`);
-                        meta = await r.json();
-                    } catch (e) {
-                        meta = null;
+                    if (cid) {
+                        try {
+                            const r = await fetch(`http://127.0.0.1:8080/ipfs/${cid}`);
+                            if (r.ok) meta = await r.json();
+                        } catch (e) { meta = null }
                     }
                     apps.push({ miner, cid, meta });
                 } catch (e) {
-                    // ignore parse errors
+                    // ignore parse errors for unrelated logs
                 }
             }
             setApplicants(apps);
         } catch (e) {
-            setError('Failed to fetch applicants: ' + e.message);
+            setError('Failed to fetch applicants: ' + (e && e.message ? e.message : e));
         } finally {
             setLoading(false);
         }
@@ -330,6 +406,43 @@ const PublisherDashboard = ({ contractAddress, contractABI }) => {
         const winner = applicants[idx];
         setSelectedAggregator({ winner, stake: stakes[idx] });
     };
+
+    // Poll sim server status and auto-fetch applicants when awaiting_selection
+    useEffect(() => {
+        let stopped = false;
+        const id = setInterval(async () => {
+            try {
+                const data = await apiCall(API_ENDPOINTS.STATUS);
+                if (stopped) return;
+                setSimStatus(data.status);
+                // When awaiting_selection, attempt to fetch applicants each poll
+                if (data.status === 'awaiting_selection') {
+                    const tmInput = document.getElementById('fetchTaskId');
+                    const tmVal = tmInput ? tmInput.value : null;
+                    fetchApplicants(tmVal || '');
+                }
+            } catch (e) {
+                // ignore polling errors (sim server may be offline)
+            }
+        }, 2000);
+        return () => { stopped = true; clearInterval(id); };
+    }, []);
+
+    // Listen for miner submissions from other components (ClientDashboard)
+    useEffect(() => {
+        const handler = (ev) => {
+            try {
+                const tmInput = document.getElementById('fetchTaskId');
+                const tmVal = tmInput ? tmInput.value : null;
+                // call fetchApplicants to refresh list immediately
+                fetchApplicants(tmVal || '');
+            } catch (e) {
+                // ignore
+            }
+        };
+        window.addEventListener('miner_submitted', handler);
+        return () => window.removeEventListener('miner_submitted', handler);
+    }, []);
     
     // --- Render ---
     
@@ -353,9 +466,12 @@ const PublisherDashboard = ({ contractAddress, contractABI }) => {
                 </div>
             ) : (
                 <div style={styles.section}>
-                    <p style={styles.connectedText}>
-                        Connected: <strong>{currentAccount}</strong>
-                    </p>
+                            <p style={styles.connectedText}>
+                                Connected: <strong>{currentAccount}</strong>
+                            </p>
+                            <div style={{ marginTop: 8 }}>
+                                <strong>Sim Server Status:</strong> {simStatus || 'unknown'} {simStatus === 'awaiting_selection' && <span style={{ marginLeft: 8 }}>⏳ Waiting for publisher selection</span>}
+                            </div>
                     
                     {/* Publish Task Form */}
                     <form onSubmit={handlePublishTask} style={styles.form}>
@@ -460,18 +576,144 @@ const PublisherDashboard = ({ contractAddress, contractABI }) => {
                         const taskId = document.getElementById('fetchTaskId').value;
                         fetchApplicants(taskId);
                     }}>Fetch Applicants</button>
-                    <button onClick={selectAggregator} style={{ marginLeft: 8 }}>Select Aggregator (PoS)</button>
+                    <button onClick={async () => {
+                        // Trigger server-side PoS/resume using the selected applicants
+                        if (!selectedApplicants || selectedApplicants.length === 0) {
+                            setError('No applicants selected. Please select participants first.');
+                            return;
+                        }
+                        try {
+                            setLoading(true);
+                            setError(null);
+                            await apiCall(API_ENDPOINTS.SELECT_PARTICIPANTS, {
+                                method: 'POST',
+                                body: JSON.stringify({ selected: selectedApplicants })
+                            });
+                            setSuccess('PoS triggered on server — simulation resumed.');
+                        } catch (e) {
+                            setError('Failed to trigger PoS: ' + (e && e.message ? e.message : e));
+                        } finally {
+                            setLoading(false);
+                        }
+                    }} style={{ marginLeft: 8 }}>Select Aggregator (PoS)</button>
                 </div>
                 {applicants && applicants.length > 0 && (
-                    <ul>
-                        {applicants.map((a, i) => (
-                            <li key={i}>{a.miner} - CID: {a.cid} - dataset: {a.meta ? a.meta.dataset_size : 'n/a'}</li>
-                        ))}
-                    </ul>
+                    <div>
+                        <p style={{ marginBottom: 8 }}>Select which applicants should participate in the PoS selection:</p>
+                        <ul>
+                            {applicants.map((a, i) => {
+                                const minerAddr = a.miner && a.miner.address ? a.miner.address : a.miner;
+                                const checked = selectedApplicants.includes(minerAddr);
+                                return (
+                                    <li key={i} style={{ marginBottom: 6 }}>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                            <input type="checkbox" checked={checked} onChange={() => {
+                                                if (checked) {
+                                                    setSelectedApplicants(prev => prev.filter(x => x !== minerAddr));
+                                                } else {
+                                                    setSelectedApplicants(prev => [...prev, minerAddr]);
+                                                }
+                                            }} />
+                                            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                                <span style={{ fontFamily: 'monospace' }}>{minerAddr}</span>
+                                                <span style={{ color: '#666', marginTop: 4 }}>CID: {a.cid || 'n/a'}</span>
+                                                <span style={{ color: '#666', marginTop: 4 }}>Metadata: {a.meta ? JSON.stringify(a.meta) : (a.metadata ? JSON.stringify(a.metadata) : 'n/a')}</span>
+                                            </div>
+                                        </label>
+                                    </li>
+                                );
+                            })}
+                        </ul>
+
+                        <div style={{ marginTop: 8 }}>
+                            <button onClick={async () => {
+                                // Submit selected participants to sim server
+                                if (!selectedApplicants || selectedApplicants.length === 0) {
+                                    setError('No applicants selected. Choose at least one participant.');
+                                    return;
+                                }
+                                try {
+                                    setLoading(true);
+                                    setError(null);
+                                    await apiCall(API_ENDPOINTS.SELECT_PARTICIPANTS, {
+                                        method: 'POST',
+                                        body: JSON.stringify({ selected: selectedApplicants })
+                                    });
+                                    setSuccess('Selection submitted — simulation will resume with chosen participants.');
+                                } catch (e) {
+                                    setError('Failed to submit selection: ' + (e && e.message ? e.message : e));
+                                } finally {
+                                    setLoading(false);
+                                }
+                            }} style={{ ...styles.button, backgroundColor: '#17a2b8' }} disabled={loading}>
+                                {loading ? 'Submitting...' : 'Confirm Selection & Resume Simulation'}
+                            </button>
+                        </div>
+                    </div>
                 )}
                 {selectedAggregator && (
                     <div style={{ marginTop: 8 }}>
                         <strong>Selected Aggregator:</strong> {selectedAggregator.winner.miner} (stake: {selectedAggregator.stake})
+                        <div style={{ marginTop: 8 }}>
+                            <label style={{ display: 'block', marginBottom: 6 }}>TaskContract TaskID (bytes32, optional):</label>
+                            <input style={{ padding: '6px', width: '100%' }} placeholder="0x... or leave blank to derive from TaskManager ID" value={taskIdBytes32} onChange={(e) => setTaskIdBytes32(e.target.value)} />
+                        </div>
+                        <div style={{ marginTop: 8 }}>
+                            <label style={{ display: 'block', marginBottom: 6 }}>TaskContract Address (optional):</label>
+                            <input style={{ padding: '6px', width: '100%' }} placeholder="0x... (or leave blank to fetch /TaskContract.json)" value={taskContractAddr} onChange={(e) => setTaskContractAddr(e.target.value)} />
+                        </div>
+                        <div style={{ marginTop: 8 }}>
+                            <button onClick={async () => {
+                                try {
+                                    setLoading(true);
+                                    setError(null);
+                                    // attempt to load ABI from public if not provided
+                                    let abi = taskContractABIJSON;
+                                    if (!abi) {
+                                        try {
+                                            const r = await fetch('/TaskContract.json');
+                                            if (r.ok) {
+                                                const json = await r.json();
+                                                abi = json.abi || json;
+                                                setTaskContractABIJSON(abi);
+                                            }
+                                        } catch (e) {
+                                            // ignore
+                                        }
+                                    }
+
+                                    const addr = taskContractAddr || (window && window.contractConfig && window.contractConfig.TaskContract && window.contractConfig.TaskContract.address) || null;
+                                    if (!addr) return setError('TaskContract address not provided. Set it in the input or put /TaskContract.json in frontend/public.');
+                                    if (!abi) return setError('TaskContract ABI not available. Place TaskContract.json (with ABI) in frontend/public.');
+                                    if (!signer) return setError('Wallet not connected');
+
+                                    // derive bytes32 taskID if user didn't supply
+                                    let tid = taskIdBytes32;
+                                    if (!tid) {
+                                        // try to derive from the TaskManager numeric id input field on the page
+                                        const tmInput = document.getElementById('fetchTaskId');
+                                        if (!tmInput) return setError('No Task ID available to derive bytes32. Please paste bytes32 into the input.');
+                                        const tmVal = tmInput.value;
+                                        if (!tmVal) return setError('Provide Task ID or bytes32 TaskContract ID');
+                                        try {
+                                            const big = BigInt(tmVal);
+                                            tid = ethers.hexZeroPad(ethers.toBeHex(big), 32);
+                                        } catch (e) {
+                                            return setError('Failed to derive bytes32 from TaskManager task id. Provide bytes32 manually.');
+                                        }
+                                    }
+
+                                    const taskContract = new ethers.Contract(addr, abi, signer);
+                                    const tx = await taskContract.markAwaitingVerification(tid, selectedAggregator.winner.miner);
+                                    await tx.wait();
+                                    setSuccess('markAwaitingVerification tx sent: ' + tx.hash);
+                                } catch (e) {
+                                    setError('Failed to call markAwaitingVerification: ' + (e && e.message ? e.message : e));
+                                } finally {
+                                    setLoading(false);
+                                }
+                            }} style={{ marginTop: 8 }}>Register Aggregator On-Chain</button>
+                        </div>
                     </div>
                 )}
             </div>

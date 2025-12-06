@@ -6,7 +6,7 @@ from eth_utils import keccak
 
 # Import your modules (adjust paths if necessary)
 from integration.web3_client import Web3Client 
-from crypto.ndd_fe import NDD_FE 
+from crypto.ndd_fe import NDD_FE, curve
 from integration.ipfs_handler import IPFSHandler
 
 class TaskPublisher:
@@ -23,6 +23,33 @@ class TaskPublisher:
             self.ipfs = IPFSHandler()
         except Exception:
             self.ipfs = None
+
+    def _normalize_task_id(self, task_ID):
+        """Return a 32-byte representation for task_ID accepting int/str/bytes."""
+        try:
+            if isinstance(task_ID, int):
+                return int(task_ID).to_bytes(32, 'big')
+            elif isinstance(task_ID, str):
+                s = task_ID
+                if s.startswith('0x') or s.startswith('0X'):
+                    task_id_int = int(s, 16)
+                else:
+                    try:
+                        task_id_int = int(s)
+                    except ValueError:
+                        b = s.encode('utf-8')
+                        return b.rjust(32, b'\x00')[:32]
+                return int(task_id_int).to_bytes(32, 'big')
+            elif isinstance(task_ID, bytes):
+                if len(task_ID) == 32:
+                    return task_ID
+                return task_ID.rjust(32, b'\x00')[:32]
+            else:
+                s = str(task_ID)
+                b = s.encode('utf-8')
+                return b.rjust(32, b'\x00')[:32]
+        except Exception:
+            return (0).to_bytes(32, 'big')
 
     def _get_stake_for_address(self, addr: str) -> int:
         """
@@ -81,6 +108,41 @@ class TaskPublisher:
         # Convert to basis points (e.g., 92.5% -> 9250) for integer compatibility on-chain
         acc_req_basis_points = int(acc_req * 100) 
 
+        # NORMALIZE task_ID -> bytes32
+        # Accept ints, decimal/hex strings, or bytes and coerce to 32-byte big-endian
+        try:
+            if isinstance(task_ID, int):
+                task_id_bytes = int(task_ID).to_bytes(32, 'big')
+            elif isinstance(task_ID, str):
+                # handle hex string like '0x1e' or decimal string like '30'
+                s = task_ID
+                if s.startswith('0x') or s.startswith('0X'):
+                    task_id_int = int(s, 16)
+                else:
+                    try:
+                        task_id_int = int(s)
+                    except ValueError:
+                        # treat as utf-8 bytes and pad/truncate
+                        b = s.encode('utf-8')
+                        task_id_bytes = b.rjust(32, b'\x00')[:32]
+                        task_id_int = None
+                if 'task_id_int' in locals() and task_id_int is not None:
+                    task_id_bytes = int(task_id_int).to_bytes(32, 'big')
+            elif isinstance(task_ID, bytes):
+                if len(task_ID) == 32:
+                    task_id_bytes = task_ID
+                else:
+                    # pad or truncate to 32
+                    task_id_bytes = task_ID.rjust(32, b'\x00')[:32]
+            else:
+                # Fallback: convert to string then to bytes
+                s = str(task_ID)
+                b = s.encode('utf-8')
+                task_id_bytes = b.rjust(32, b'\x00')[:32]
+        except Exception:
+            # On any error, fallback to zero bytes32
+            task_id_bytes = (0).to_bytes(32, 'big')
+
         # 2. Compute Commit Hash (Strictly Algorithm 1, Step 1)
         # HASH(acc_req || nonce_TP)
         # We pack them tightly: uint256, uint256
@@ -105,7 +167,7 @@ class TaskPublisher:
                 self.web3_client.send_transaction(
                     self.web3_client.task_contract,
                     'tpCommit',
-                    task_ID,
+                    task_id_bytes,
                     reward_wei,
                     commit_hash,
                     task_meta_cid
@@ -114,7 +176,7 @@ class TaskPublisher:
                 self.web3_client.send_transaction(
                     self.web3_client.task_contract,
                     'tpCommit', 
-                    task_ID, 
+                    task_id_bytes, 
                     reward_wei, 
                     commit_hash
                 )
@@ -123,7 +185,7 @@ class TaskPublisher:
             self.web3_client.send_transaction(
                 self.web3_client.task_contract,
                 'tpCommit', 
-                task_ID, 
+                task_id_bytes, 
                 reward_wei, 
                 commit_hash
             )
@@ -133,7 +195,7 @@ class TaskPublisher:
         self.web3_client.send_transaction(
             self.web3_client.escrow_contract,
             'deposit', 
-            task_ID,
+            task_id_bytes,
             value=reward_wei # Payable function
         )
 
@@ -142,7 +204,7 @@ class TaskPublisher:
         self.web3_client.send_transaction(
             self.web3_client.task_contract,
             'startProcessing',
-            task_ID
+            task_id_bytes
         )
 
         print(f"[TP] Task {task_ID.hex()} published and active.")
@@ -177,8 +239,12 @@ class TaskPublisher:
                     proof = self.ipfs.get_json(cid)
                     is_valid = self.verify_miner_proof(proof)
                 else:
-                    # If no CID available, mark invalid
-                    is_valid = False
+                    # Allow inline proofs submitted in the simulation (no IPFS available)
+                    inline = resp.get('proof_inline') or resp.get('proof') or resp.get('metadata')
+                    if inline:
+                        is_valid = self.verify_miner_proof(inline)
+                    else:
+                        is_valid = False
             except Exception as e:
                 print(f"[TP] Warning: failed to verify proof for {addr}: {e}")
                 is_valid = False
@@ -212,7 +278,26 @@ class TaskPublisher:
         aggregator_pk = public_keys[selected_index]
         print(f"✅ [TP] PoS Winner (Aggregator): {aggregator_addr[:10]}...")
         
-        miner_pks = public_keys
+        # Normalize public keys: if miners submitted simple strings (simulator),
+        # derive an EC point deterministically from the PK string so key_derive
+        # can perform EC operations. Real deployments should pass proper EC points.
+        normalized_pks = []
+        for pk in public_keys:
+            try:
+                # If already a point-like object with coordinate 'x', accept it
+                if hasattr(pk, 'x'):
+                    normalized_pks.append(pk)
+                else:
+                    # Derive a scalar from the pk (string/int) and multiply base point
+                    import hashlib
+                    pk_bytes = str(pk).encode('utf-8')
+                    scalar = int(hashlib.sha256(pk_bytes).hexdigest(), 16) % curve.field.n
+                    normalized_pks.append(scalar * curve.g)
+            except Exception:
+                # Fallback: use generator
+                normalized_pks.append(1 * curve.g)
+
+        miner_pks = normalized_pks
 
 
         # 2. Update TaskContract with Aggregator (Algorithm 2, Line 16)
@@ -222,7 +307,7 @@ class TaskPublisher:
         self.web3_client.send_transaction(
             self.web3_client.task_contract,
             'markAwaitingVerification',
-            task_ID,
+            self._normalize_task_id(task_ID),
             aggregator_addr
         )
 
@@ -238,7 +323,7 @@ class TaskPublisher:
             pk_miners=miner_pks, 
             weights_y=weights_y, 
             ctr=round_ctr, 
-            task_ID=task_ID
+            task_ID=self._normalize_task_id(task_ID)
         )
         
         print(f"[TP] sk_FE derived. (Value hidden for security)")
@@ -275,7 +360,7 @@ class TaskPublisher:
         self.web3_client.send_transaction(
             self.web3_client.task_contract,
             'tpReveal',
-            task_ID,
+            self._normalize_task_id(task_ID),
             acc_req_basis_points,
             nonce_TP
         )

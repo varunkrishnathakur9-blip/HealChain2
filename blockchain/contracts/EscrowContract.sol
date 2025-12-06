@@ -2,7 +2,8 @@
 pragma solidity ^0.8.0;
 
 interface ITaskContract {
-    function getTaskData(bytes32 taskID) external view returns (
+    // Use the new name to explicitly request the full shape including aggregator
+    function getTaskDataWithAggregator(bytes32 taskID) external view returns (
         address publisher, 
         address aggregator,
         uint256 rewardAmount, 
@@ -47,7 +48,7 @@ contract EscrowContract {
             uint256[] memory scores, 
             uint256 totalScore, 
             bool isPaymentEligible
-        ) = taskContract.getTaskData(taskID);
+        ) = taskContract.getTaskDataWithAggregator(taskID);
 
         uint256 rewardPool = escrowBalance[taskID];
         require(rewardPool > 0, "No funds.");
@@ -73,8 +74,11 @@ contract EscrowContract {
                 emit RewardsDistributed(taskID, totalDistributed, 0);
             } else {
                 // FIX: Calculate Aggregator Share FIRST [cite: 906]
-                // aggregatorReward = R_total * policy (5%)
-                uint256 aggregatorReward = (rewardPool * AGGREGATOR_SHARE_BPS) / 10000;
+                // If aggregator is not set (zero address), skip aggregator cut
+                uint256 aggregatorReward = 0;
+                if (aggregator != address(0)) {
+                    aggregatorReward = (rewardPool * AGGREGATOR_SHARE_BPS) / 10000;
+                }
                 
                 // Remaining pool for miners [cite: 907]
                 uint256 minerPool = rewardPool - aggregatorReward;

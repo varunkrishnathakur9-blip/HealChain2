@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { API_ENDPOINTS, apiCall } from '../src/config/api';
 
 const AggregatorDashboard = ({ user }) => {
   const [status, setStatus] = useState('idle');
@@ -7,11 +8,8 @@ const AggregatorDashboard = ({ user }) => {
   useEffect(() => {
     const t = setInterval(async () => {
       try {
-        const res = await fetch('http://127.0.0.1:5000/status');
-        if (res.ok) {
-          const d = await res.json();
-          setStatus(d.status);
-        }
+        const d = await apiCall(API_ENDPOINTS.STATUS);
+        setStatus(d.status);
       } catch (e) {}
     }, 3000);
     return () => clearInterval(t);
@@ -19,8 +17,7 @@ const AggregatorDashboard = ({ user }) => {
 
   const fetchResults = async () => {
     try {
-      const r = await fetch('http://127.0.0.1:5000/results');
-      const data = await r.json();
+      const data = await apiCall(API_ENDPOINTS.RESULTS);
       if (data.found) setResults(data.results);
     } catch (e) {
       console.error(e);

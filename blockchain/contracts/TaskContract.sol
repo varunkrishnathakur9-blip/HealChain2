@@ -112,6 +112,20 @@ contract TaskContract {
     }
 
     // M6: Aggregator Finalizes the Block
+    // Backwards-compatible overload: older tests may call publishBlock without
+    // the final `_signature` bytes parameter. Provide a forwarding overload
+    // that passes an empty signature to the primary implementation.
+    function publishBlock(
+        bytes32 taskID, 
+        bytes32 _modelHash,
+        uint256 _accCalc,
+        address _aggregator,
+        address[] memory _participants,
+        bytes32[] memory _scoreCommits
+    ) public onlyAggregator(taskID) {
+        publishBlock(taskID, _modelHash, _accCalc, _aggregator, _participants, _scoreCommits, new bytes(0));
+    }
+
     function publishBlock(
         bytes32 taskID, 
         bytes32 _modelHash,
@@ -219,11 +233,11 @@ contract TaskContract {
         require(!hasRevealedScore[taskID][msg.sender], "Score already revealed.");
 
         uint256 idx = task.participantIndex[msg.sender];
-        require(idx < task.participants.length && task.participants[idx] == msg.sender, "Not a participant.");
+        require(idx < task.participants.length && task.participants[idx] == msg.sender, "Not a valid participant.");
 
         // Verify Hash [cite: 900]
         bytes32 computedCommit = keccak256(abi.encodePacked(score, nonce_i, taskID, msg.sender));
-        require(computedCommit == task.scoreCommits[idx], "Score commit mismatch.");
+        require(computedCommit == task.scoreCommits[idx], "Score commit mismatch. Miner is dishonest.");
 
         task.revealedScores[msg.sender] = score;
         task.totalRevealedScore += score;
@@ -232,8 +246,8 @@ contract TaskContract {
         emit MinerScoreRevealed(taskID, msg.sender, score);
     }
     
-    // Getter for Escrow
-    function getTaskData(bytes32 taskID) 
+    // Primary getter that returns the full shape including the aggregator.
+    function getTaskDataWithAggregator(bytes32 taskID) 
         public 
         view 
         returns (
@@ -263,6 +277,24 @@ contract TaskContract {
             task.totalRevealedScore, 
             (task.status != TaskStatus.FAILED_ACCURACY)
         );
+    }
+
+    // Backwards-compatible getter for legacy callers/tests that expect the
+    // older 6-tuple return (without aggregator). This returns:
+    // (publisher, rewardAmount, participants, revealedScores, totalRevealedScore, isPaymentEligible)
+    function getTaskData(bytes32 taskID)
+        public
+        view
+        returns (
+            address publisher,
+            uint256 rewardAmount,
+            address[] memory participants,
+            uint256[] memory revealedScores,
+            uint256 totalRevealedScore,
+            bool isPaymentEligible
+        )
+    {
+        (publisher, , rewardAmount, participants, revealedScores, totalRevealedScore, isPaymentEligible) = getTaskDataWithAggregator(taskID);
     }
     
     function setTaskDistributed(bytes32 taskID) external onlyEscrow {

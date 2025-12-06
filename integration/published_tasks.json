@@ -1,0 +1,18 @@
+[
+  {
+    "taskId": "0xe27bb467797acd68e4a4591a81297d5073b8b0411078f567a4742403dc408da3",
+    "txHash": null,
+    "dataHash": "QmchestXrayPneumoniaDect5",
+    "publisher": "frontend",
+    "time": 1765029333,
+    "meta": {
+      "initialModelLink": "",
+      "datasetReq": "chestxray-pneumonia",
+      "acc_req": 87,
+      "reward": 0.9,
+      "texp": 86400,
+      "nonceTP": 1,
+      "L": "dataset"
+    }
+  }
+]
