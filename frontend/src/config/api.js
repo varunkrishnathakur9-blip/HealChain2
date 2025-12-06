@@ -23,6 +23,10 @@ export const API_ENDPOINTS = {
   SELECT_PARTICIPANTS: `${API_BASE_URL}/select-participants`,
   START_POS: `${API_BASE_URL}/start-pos`,
   
+  // Task endpoints
+  PUBLISH_TASK: `${API_BASE_URL}/publish-task`,
+  PUBLISHED_TASKS: `${API_BASE_URL}/published-tasks`,
+  
   // Debug
   DEBUG: `${API_BASE_URL}/debug`,
 };

@@ -1,39 +1,58 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Card, Metric, ProgressBar, Badge, Button } from '../../components';
+import { API_ENDPOINTS, apiCall } from '../config/api';
 
 /**
  * Dashboard Page - Landing page showing network statistics and recent tasks
  */
 export const Dashboard = ({ user, contractAddress, contractABI, rpcUrl, chainId }) => {
-  // Mock data - replace with real data from contracts/API
-  const metrics = {
-    activeTasks: 12,
-    registeredMiners: 147,
-    totalRewards: 24.5,
-    avgAccuracy: 94.8,
+  const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const fetchTasks = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await apiCall(API_ENDPOINTS.PUBLISHED_TASKS);
+      setTasks(data.tasks || []);
+    } catch (err) {
+      console.error('Failed to fetch tasks:', err);
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const recentTasks = [
-    {
-      id: 1,
-      name: 'ChestXray-Pneumonia',
-      description: 'Train classification model on medical images',
-      reward: 1.5,
-      miners: { current: 23, required: 30 },
-      accuracy: 76,
-      status: 'active',
-    },
-    {
-      id: 2,
-      name: 'MNIST Classification',
-      description: 'Digit recognition on handwritten digits',
-      reward: 1.0,
-      miners: { current: 18, required: 25 },
-      accuracy: 92,
-      status: 'pending',
-    },
-  ];
+  useEffect(() => {
+    fetchTasks();
+    const interval = setInterval(fetchTasks, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const metrics = {
+    activeTasks: tasks.length,
+    registeredMiners: tasks.reduce((sum, t) => sum + (t.meta?.minMiners || 0), 0) || 0,
+    totalRewards: tasks.reduce((sum, t) => sum + (parseFloat(t.meta?.reward) || 0), 0),
+    avgAccuracy: tasks.length > 0 
+      ? tasks.reduce((sum, t) => sum + (parseFloat(t.meta?.acc_req) || 0), 0) / tasks.length 
+      : 0,
+  };
+
+  const formatTask = (task) => ({
+    id: task.taskId || task.txHash || `task-${task.time}`,
+    name: task.meta?.L || task.meta?.datasetReq || 'Untitled Task',
+    description: task.meta?.description || `Dataset: ${task.meta?.datasetReq || 'N/A'}`,
+    reward: parseFloat(task.meta?.reward) || 0,
+    miners: { current: 0, required: task.meta?.minMiners || 10 },
+    accuracy: parseFloat(task.meta?.acc_req) || 0,
+    status: 'active',
+    publisher: task.publisher,
+    time: task.time,
+  });
+
+  const recentTasks = tasks.slice(-5).reverse().map(formatTask);
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: 'var(--color-bg-secondary)' }}>
@@ -97,9 +116,9 @@ export const Dashboard = ({ user, contractAddress, contractABI, rpcUrl, chainId 
           }}
         >
           <Metric label="Active Tasks" value={metrics.activeTasks} icon="📋" />
-          <Metric label="Registered Miners" value={metrics.registeredMiners} icon="⛏️" />
-          <Metric label="Total Rewards Distributed" value={metrics.totalRewards} unit="ETH" icon="💰" />
-          <Metric label="Average Model Accuracy" value={metrics.avgAccuracy} unit="%" icon="🎯" />
+          <Metric label="Required Miners" value={metrics.registeredMiners} icon="⛏️" />
+          <Metric label="Total Rewards" value={metrics.totalRewards.toFixed(2)} unit="ETH" icon="💰" />
+          <Metric label="Average Accuracy Req" value={metrics.avgAccuracy.toFixed(1)} unit="%" icon="🎯" />
         </div>
 
         {/* Recent Tasks */}
@@ -107,13 +126,40 @@ export const Dashboard = ({ user, contractAddress, contractABI, rpcUrl, chainId 
           title="Recent Tasks"
           subtitle="Latest federated learning tasks on the network"
           action={
-            <Link to="/tasks">
-              <Button variant="outline" size="sm">
-                View All →
+            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+              <Button variant="outline" size="sm" onClick={fetchTasks} disabled={loading}>
+                {loading ? 'Loading...' : 'Refresh'}
               </Button>
-            </Link>
+              <Link to="/tasks">
+                <Button variant="outline" size="sm">
+                  View All →
+                </Button>
+              </Link>
+            </div>
           }
         >
+          {error && (
+            <div style={{ 
+              padding: 'var(--space-3)', 
+              backgroundColor: 'var(--color-error-light)', 
+              color: 'var(--color-error)',
+              borderRadius: 'var(--radius-md)',
+              marginBottom: 'var(--space-4)'
+            }}>
+              Failed to load tasks: {error}
+            </div>
+          )}
+          
+          {!loading && recentTasks.length === 0 && !error && (
+            <div style={{ 
+              padding: 'var(--space-6)', 
+              textAlign: 'center',
+              color: 'var(--color-text-secondary)'
+            }}>
+              No tasks published yet. Be the first to publish a task!
+            </div>
+          )}
+
           <div
             className="grid grid-auto-fit"
             style={{
@@ -183,4 +229,3 @@ export const Dashboard = ({ user, contractAddress, contractABI, rpcUrl, chainId 
 };
 
 export default Dashboard;
-

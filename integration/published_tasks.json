@@ -1,6 +1,6 @@
 [
   {
-    "taskId": "0xe27bb467797acd68e4a4591a81297d5073b8b0411078f567a4742403dc408da3",
+    "taskId": "0xc8a02c3f6f3efb04835615a531b78c91642c070cfaf5bbabe2306ad22cce40ad",
     "txHash": null,
     "dataHash": "QmchestXrayPneumoniaDect5",
     "publisher": "frontend",
@@ -13,6 +13,22 @@
       "texp": 86400,
       "nonceTP": 1,
       "L": "dataset"
+    }
+  },
+  {
+    "taskId": null,
+    "txHash": null,
+    "dataHash": "QmchestXrayPneumoniaDect5",
+    "publisher": "frontend",
+    "time": 1765032081,
+    "meta": {
+      "initialModelLink": "",
+      "datasetReq": "chestxray-pneumonia",
+      "acc_req": 87,
+      "reward": 0.9,
+      "texp": 86400,
+      "nonceTP": 1,
+      "L": "gg"
     }
   }
 ]
