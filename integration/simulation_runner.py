@@ -92,7 +92,12 @@ def run_healchain_simulation(publisher, aggregator, miners, pk_A, ndd_fe, web3_c
         
     
     print(f"\n=== HEALCHAIN END-TO-END SIMULATION ===")
-    print(f"Task ID: {task_ID.hex()[:16]}...")
+    # Print a short hex preview for debugging, but canonical ID will be integer
+    try:
+        hex_preview = task_ID.hex()[:16]
+    except Exception:
+        hex_preview = str(task_ID)[:16]
+    print(f"Task ID (preview hex): {hex_preview}...")
     run_start_time = time.time()
 
     # M1: TP interactively provides inputs and executes task commit + reward deposit
@@ -282,7 +287,10 @@ def run_healchain_simulation(publisher, aggregator, miners, pk_A, ndd_fe, web3_c
                 for m in miners:
                     # miners may have a reveal_data attribute mapping task_id hex to details
                     reveal_map = getattr(m, 'reveal_data', {})
-                    d = reveal_map.get(task_ID.hex(), {}) if isinstance(reveal_map, dict) else {}
+                    # try both hex key and integer key for compatibility
+                    d = {}
+                    if isinstance(reveal_map, dict):
+                        d = reveal_map.get(task_ID.hex(), {}) or reveal_map.get(str(int.from_bytes(task_ID, 'big')), {})
                     miners_info.append({
                         'address': getattr(m, 'address', None),
                         'score_commit': d.get('score_commit'),
@@ -293,7 +301,8 @@ def run_healchain_simulation(publisher, aggregator, miners, pk_A, ndd_fe, web3_c
                     })
 
                 results = {
-                    'task_id': task_ID.hex(),
+                    # canonical task id as integer for downstream UI/DB
+                    'task_id': int.from_bytes(task_ID, 'big'),
                     'final_accuracy': candidate.get('accCalc'),
                     'candidate_block': candidate,
                     'miners': miners_info,

@@ -262,6 +262,33 @@ const PublisherDashboard = ({ contractAddress, contractABI }) => {
             // If the sim server isn't running, this will fail gracefully and
             // the publisher can still start it manually via the UI.
             try {
+                // Persist the published task record to the sim server so dashboards
+                // can show it immediately even before the simulation thread starts.
+                try {
+                    const publishPayload = {
+                        taskId: taskId || null,
+                        txHash: receipt.hash || null,
+                        dataHash: dataHash,
+                        publisher: currentAccount,
+                        initialModelLink: initialModelLink,
+                        datasetReq: datasetReq,
+                        acc_req: parseFloat(accReq) || 85,
+                        reward: parseFloat(reward) || 1,
+                        texp: parseInt(texp) || 86400,
+                        nonceTP: nonceTP || 0,
+                        L: taskLabel || ''
+                    };
+                    apiCall(API_ENDPOINTS.PUBLISH_TASK, { method: 'POST', body: JSON.stringify(publishPayload) })
+                        .then((res) => {
+                            // optionally inform user / refresh dashboards via event
+                            try { window.dispatchEvent(new CustomEvent('task_published', { detail: { taskId: res.task && res.task.taskId ? res.task.taskId : taskId, dataHash: dataHash, publisher: currentAccount } })); } catch (e) {}
+                        })
+                        .catch((e) => {
+                            // ignore persistence failure — sim server may be offline
+                        });
+                } catch (e) {
+                    // ignore persistence errors
+                }
                 const simBody = {
                     publisher: currentAccount,
                     dataHash: dataHash,

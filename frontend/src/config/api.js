@@ -22,6 +22,7 @@ export const API_ENDPOINTS = {
   // Selection endpoints
   SELECT_PARTICIPANTS: `${API_BASE_URL}/select-participants`,
   START_POS: `${API_BASE_URL}/start-pos`,
+  RUN_POS_SELECTION: `${API_BASE_URL}/run-pos-selection`,
   
   // Task endpoints
   PUBLISH_TASK: `${API_BASE_URL}/publish-task`,

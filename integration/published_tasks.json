@@ -1,6 +1,6 @@
 [
   {
-    "taskId": "0xc8a02c3f6f3efb04835615a531b78c91642c070cfaf5bbabe2306ad22cce40ad",
+    "taskId": 90745570634049291048321312112315836306903271021469263017544872116096129188013,
     "txHash": null,
     "dataHash": "QmchestXrayPneumoniaDect5",
     "publisher": "frontend",
@@ -13,7 +13,8 @@
       "texp": 86400,
       "nonceTP": 1,
       "L": "dataset"
-    }
+    },
+    "applicants": []
   },
   {
     "taskId": null,
@@ -29,6 +30,60 @@
       "texp": 86400,
       "nonceTP": 1,
       "L": "gg"
-    }
+    },
+    "applicants": []
+  },
+  {
+    "taskId": 54765150514482085381543871630077619758397400517406051550136072893746417378406,
+    "txHash": null,
+    "dataHash": "QmchestXrayPneumoniaDect6",
+    "publisher": "frontend",
+    "time": 1765034188,
+    "meta": {
+      "initialModelLink": "",
+      "datasetReq": "chestxray-pneumonia",
+      "acc_req": 88,
+      "reward": 1,
+      "texp": 86400,
+      "nonceTP": 1,
+      "L": "Task Disc"
+    },
+    "applicants": []
+  },
+  {
+    "taskId": null,
+    "txHash": null,
+    "dataHash": "QmchestXrayPneumoniaDect6",
+    "publisher": "frontend",
+    "time": 1765035825,
+    "meta": {
+      "initialModelLink": "",
+      "datasetReq": "imagenet_subset",
+      "acc_req": 88,
+      "reward": 0.9,
+      "texp": 86400,
+      "nonceTP": 1,
+      "L": "hj"
+    },
+    "applicants": []
+  },
+  {
+    "taskId": 90745570634049291048321312112315836306903271021469263017544872116096129188014,
+    "txHash": null,
+    "dataHash": "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
+    "publisher": "frontend",
+    "time": 1765040650,
+    "meta": {
+      "initialModelLink": "model",
+      "datasetReq": "chestxray-pneumonia",
+      "acc_req": 86,
+      "reward": 1,
+      "texp": 120,
+      "nonceTP": "123445",
+      "L": "dataset5.0",
+      "pkTP": "0xeB365b5D30f7dAeAF70d7a50b98B262140cB7111",
+      "skTP": "0x679a6ad9cc52fefe0afe62b421d01ebd8b466d32651edb5d7983df3fc0e2f591"
+    },
+    "applicants": []
   }
 ]

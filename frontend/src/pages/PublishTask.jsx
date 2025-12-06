@@ -12,6 +12,12 @@ export const PublishTask = ({ contractAddress, contractABI, rpcUrl }) => {
     requiredAccuracy: 95,
     totalReward: 1.5,
     description: '',
+    dataHash: '',
+    initialModelLink: '',
+    texp: 86400,
+    nonceTP: '',
+    pkTP: '',
+    skTP: '',
     minMiners: 10,
   });
   const [loading, setLoading] = useState(false);
@@ -21,8 +27,8 @@ export const PublishTask = ({ contractAddress, contractABI, rpcUrl }) => {
     const { name, value } = e.target;
     setFormData((prev) => ({
       ...prev,
-      [name]: name === 'requiredAccuracy' || name === 'totalReward' || name === 'minMiners' 
-        ? parseFloat(value) || 0 
+      [name]: (name === 'requiredAccuracy' || name === 'totalReward' || name === 'minMiners' || name === 'texp')
+        ? (value === '' ? '' : Number(value))
         : value,
     }));
   };
@@ -66,14 +72,17 @@ export const PublishTask = ({ contractAddress, contractABI, rpcUrl }) => {
       // 4. POST to backend simulation server:
       const simulationPayload = {
         publisher: 'frontend', // TODO: Get from connected wallet
-        dataHash: `Qm${formData.taskName.replace(/\s+/g, '')}`, // TODO: Generate proper hash
-        initialModelLink: '',
+        // allow explicit dataHash override, otherwise derive from task name
+        dataHash: formData.dataHash && String(formData.dataHash).trim() ? String(formData.dataHash).trim() : `Qm${String(formData.taskName || '').replace(/\s+/g, '')}`,
+        initialModelLink: formData.initialModelLink || '',
         datasetReq: formData.datasetType.toLowerCase().replace(/\s+/g, '_'),
-        acc_req: formData.requiredAccuracy,
-        reward: formData.totalReward,
-        texp: 86400, // 24 hours default
-        nonceTP: 1,
+        acc_req: Number(formData.requiredAccuracy) || 85,
+        reward: Number(formData.totalReward) || 1,
+        texp: Number(formData.texp) || 86400,
+        nonceTP: formData.nonceTP || (Math.floor(Math.random() * 9000) + 1000),
         L: formData.description || formData.taskName,
+        pkTP: formData.pkTP || null,
+        skTP: formData.skTP || null,
       };
 
       const result = await apiCall(API_ENDPOINTS.RUN_SIMULATION, {
@@ -150,6 +159,18 @@ export const PublishTask = ({ contractAddress, contractABI, rpcUrl }) => {
             />
           </div>
 
+          <div>
+            <label style={labelStyle}>Data Hash (optional)</label>
+            <input
+              type="text"
+              name="dataHash"
+              value={formData.dataHash}
+              onChange={handleChange}
+              placeholder="Optional IPFS CID (e.g. Qm...) — auto-derived if blank"
+              style={inputStyle}
+            />
+          </div>
+
           {/* Dataset Selection */}
           <div>
             <label style={labelStyle}>Dataset Type</label>
@@ -200,6 +221,40 @@ export const PublishTask = ({ contractAddress, contractABI, rpcUrl }) => {
                 style={inputStyle}
                 required
               />
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-4)' }}>
+            <div>
+              <label style={labelStyle}>Texp (expiration seconds)</label>
+              <input type="number" name="texp" value={formData.texp} onChange={handleChange} min="1" style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Nonce (nonceTP)</label>
+              <input type="text" name="nonceTP" value={formData.nonceTP} onChange={handleChange} placeholder="optional integer" style={inputStyle} />
+            </div>
+          </div>
+
+          <div>
+            <label style={labelStyle}>Initial Model Link (L)</label>
+            <input
+              type="text"
+              name="initialModelLink"
+              value={formData.initialModelLink}
+              onChange={handleChange}
+              placeholder="e.g., https://.../model.zip"
+              style={inputStyle}
+            />
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-4)' }}>
+            <div>
+              <label style={labelStyle}>pkTP (optional)</label>
+              <input type="text" name="pkTP" value={formData.pkTP} onChange={handleChange} placeholder="publisher public key" style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>skTP (optional)</label>
+              <input type="text" name="skTP" value={formData.skTP} onChange={handleChange} placeholder="publisher secret key (dev only)" style={inputStyle} />
             </div>
           </div>
 

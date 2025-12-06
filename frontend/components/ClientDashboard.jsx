@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import PublisherDashboard from './PublisherDashboard.jsx';
 import { API_ENDPOINTS, apiCall } from '../src/config/api';
 
 const ClientDashboard = ({ user, contractAddress, contractABI }) => {
@@ -10,6 +9,12 @@ const ClientDashboard = ({ user, contractAddress, contractABI }) => {
   const [metadataJson, setMetadataJson] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState(null);
+  const [publishedTasks, setPublishedTasks] = useState([]);
+  const [loadingTasks, setLoadingTasks] = useState(false);
+  const [viewTask, setViewTask] = useState(null);
+  const [taskApplicants, setTaskApplicants] = useState([]);
+  const [loadingApplicants, setLoadingApplicants] = useState(false);
+  const [posResult, setPosResult] = useState(null);
 
   useEffect(() => {
     // If MetaMask is available, try to read the selected account (non-blocking)
@@ -27,6 +32,48 @@ const ClientDashboard = ({ user, contractAddress, contractABI }) => {
         // ignore
       }
     }
+  }, []);
+
+  // Fetch persisted published tasks for publishers/miners to view
+  const fetchPublishedTasks = async () => {
+    try {
+      setLoadingTasks(true);
+      const data = await apiCall(API_ENDPOINTS.PUBLISHED_TASKS);
+      if (data && data.tasks) setPublishedTasks(data.tasks);
+    } catch (e) {
+      console.warn('Failed to fetch published tasks', e);
+    } finally {
+      setLoadingTasks(false);
+    }
+  };
+
+  // Fetch applicants for the currently open simulation task
+  const fetchTaskApplicants = async (taskId) => {
+    try {
+      setLoadingApplicants(true);
+      // The sim server exposes /get-applicants and supports querying by taskId
+      const url = taskId ? `${API_ENDPOINTS.GET_APPLICANTS}?taskId=${encodeURIComponent(taskId)}` : API_ENDPOINTS.GET_APPLICANTS;
+      const data = await apiCall(url);
+      if (data && data.applicants) {
+        setTaskApplicants(data.applicants || []);
+      } else {
+        setTaskApplicants([]);
+      }
+    } catch (e) {
+      console.warn('Failed to fetch applicants', e);
+      setTaskApplicants([]);
+    } finally {
+      setLoadingApplicants(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchPublishedTasks();
+    // Refresh when a miner submits or a task is published elsewhere
+    const handler = () => fetchPublishedTasks();
+    window.addEventListener('miner_submitted', handler);
+    window.addEventListener('task_published', handler);
+    return () => { window.removeEventListener('miner_submitted', handler); window.removeEventListener('task_published', handler); };
   }, []);
 
   const connectWallet = async () => {
@@ -58,6 +105,12 @@ const ClientDashboard = ({ user, contractAddress, contractABI }) => {
       proof_cid: proofCid || null,
       metadata: metadata || null
     };
+
+    // If user is viewing a particular published task, include taskId so the server
+    // can persist this application against the task record for dashboards.
+    if (viewTask && (viewTask.taskId || viewTask.dataHash)) {
+      payload.taskId = viewTask.taskId || viewTask.dataHash;
+    }
 
     try {
       setLoading(true);
@@ -152,10 +205,124 @@ const ClientDashboard = ({ user, contractAddress, contractABI }) => {
         )}
       </div>
 
+      {/* Publisher UI removed from Client Dashboard (publisher functions available under Tasks → Publish) */}
+
       <div style={{ marginTop: 18 }}>
-        <h3>Publish a Task</h3>
-        <p>Provide initial model link and dataset requirement to become eligible to publish (as in simulation).</p>
-        <PublisherDashboard contractAddress={contractAddress} contractABI={contractABI} />
+        <h3>Published Tasks</h3>
+        <p>See tasks published in the simulation server and apply directly.</p>
+        {loadingTasks ? (
+          <div>Loading tasks...</div>
+        ) : (
+          <div>
+            {publishedTasks.length === 0 ? (
+              <div>No published tasks available.</div>
+            ) : (
+              <ul>
+                {publishedTasks.map((t, i) => (
+                  <li key={i} style={{ marginBottom: 12, padding: 8, border: '1px solid #eee' }}>
+                    <div><strong>Task ID:</strong> <span style={{ fontFamily: 'monospace' }}>{t.taskId || 'n/a'}</span></div>
+                    <div><strong>Data Hash:</strong> {t.dataHash || 'n/a'}</div>
+                    <div><strong>Publisher:</strong> {t.publisher || 'n/a'}</div>
+                    <div style={{ marginTop: 6 }}>
+                      <strong>Reward:</strong> {t.meta && (t.meta.reward || t.meta.reward_R) ? (t.meta.reward || t.meta.reward_R) : 'n/a'} &nbsp; 
+                      <strong>Acc Req:</strong> {t.meta && (t.meta.acc_req || t.meta.accReq) ? (t.meta.acc_req || t.meta.accReq) : 'n/a'} &nbsp; 
+                      <strong>Texp:</strong> {t.meta && (t.meta.texp || t.meta.Texp) ? (t.meta.texp || t.meta.Texp) : 'n/a'}
+                    </div>
+                    <div style={{ marginTop: 8 }}>
+                      <button onClick={() => {
+                        // Pre-fill form with dataHash and trigger scroll
+                        if (t.dataHash) setProofCid(t.dataHash);
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                      }}>Apply / Send Response</button>
+                      <button style={{ marginLeft: 8 }} onClick={() => {
+                        // Toggle view details panel
+                        if (viewTask && viewTask.taskId === t.taskId) {
+                          setViewTask(null);
+                          setTaskApplicants([]);
+                          setPosResult(null);
+                        } else {
+                          setViewTask(t);
+                          // fetch applicants for this task
+                          fetchTaskApplicants(t.taskId);
+                        }
+                      }}>{viewTask && viewTask.taskId === t.taskId ? 'Hide Details' : 'View Details'}</button>
+                      <button style={{ marginLeft: 8 }} onClick={() => {
+                        // Quick submit example using connectedAccount (if available)
+                        const payload = { address: connectedAccount || '0x0', pk: pk || null, proof_cid: t.dataHash || null, metadata: { sourcedFrom: 'publishedTasks' } };
+                        // Attach taskId so submissions are persisted to the task record
+                        payload.taskId = t.taskId || t.dataHash;
+                        apiCall(API_ENDPOINTS.MINER_SUBMIT, { method: 'POST', body: JSON.stringify(payload) })
+                          .then(() => { setMessage('Application submitted for task ' + (t.taskId || t.dataHash)); })
+                          .catch((e) => { setMessage('Failed to submit: ' + e.message); });
+                      }}>Quick Submit</button>
+                    </div>
+                    {/* Details panel */}
+                    {viewTask && viewTask.taskId === t.taskId && (
+                      <div style={{ marginTop: 12, padding: 10, background: '#fafafa', border: '1px solid #ddd' }}>
+                        <h4>Task Details</h4>
+                        <div><strong>Task ID:</strong> <span style={{ fontFamily: 'monospace' }}>{t.taskId}</span></div>
+                        <div><strong>Data Hash:</strong> {t.dataHash}</div>
+                        <div><strong>Publisher:</strong> {t.publisher}</div>
+                        <div style={{ marginTop: 8 }}>
+                          <strong>Reward:</strong> {t.meta && (t.meta.reward || t.meta.reward_R) ? (t.meta.reward || t.meta.reward_R) : 'n/a'}<br />
+                          <strong>Acc Req:</strong> {t.meta && (t.meta.acc_req || t.meta.accReq) ? (t.meta.acc_req || t.meta.accReq) : 'n/a'}<br />
+                          <strong>Texp:</strong> {t.meta && (t.meta.texp || t.meta.Texp) ? (t.meta.texp || t.meta.Texp) : 'n/a'}
+                        </div>
+                        <div style={{ marginTop: 12 }}>
+                          <button onClick={() => fetchTaskApplicants(t.taskId)}>Refresh Applicants</button>
+                          <button style={{ marginLeft: 8 }} onClick={async () => {
+                            try {
+                              setMessage(null);
+                              const k = 1; // select 1 aggregator by default
+                              const res = await apiCall(API_ENDPOINTS.RUN_POS_SELECTION, { method: 'POST', body: JSON.stringify({ k }) });
+                              if (res && res.selected) {
+                                setPosResult(res.selected);
+                                setMessage('PoS selection started. Selected: ' + res.selected.join(', '));
+                              }
+                            } catch (e) {
+                              setMessage('PoS selection failed: ' + (e && e.message ? e.message : e));
+                            }
+                          }}>Request PoS Selection</button>
+                        </div>
+
+                        <div style={{ marginTop: 12 }}>
+                          <h5>Applicants</h5>
+                          {loadingApplicants ? (<div>Loading applicants...</div>) : (
+                            taskApplicants.length === 0 ? (<div>No applicants yet.</div>) : (
+                              <ul>
+                                {taskApplicants.map((a, idx) => (
+                                  <li key={idx} style={{ marginBottom: 8 }}>
+                                    <div><strong>Address:</strong> <span style={{ fontFamily: 'monospace' }}>{a.address}</span></div>
+                                    <div><strong>CID:</strong> {a.proof_cid || a.proofCid || 'n/a'}</div>
+                                    <div><strong>Meta:</strong> {a.metadata ? JSON.stringify(a.metadata) : (a.meta ? JSON.stringify(a.meta) : 'n/a')}</div>
+                                    <div style={{ marginTop: 6 }}>
+                                      <button onClick={() => {
+                                        // Quick submit on behalf of connectedAccount to simulate miner response
+                                        const payload = { address: connectedAccount || '0x0', pk: pk || null, proof_cid: a.proof_cid || a.proofCid || null, metadata: a.metadata || a.meta || {} };
+                                        // Include taskId so the applicant is stored against the persisted task
+                                        payload.taskId = t.taskId || t.dataHash;
+                                        apiCall(API_ENDPOINTS.MINER_SUBMIT, { method: 'POST', body: JSON.stringify(payload) })
+                                          .then(() => { setMessage('Application submitted (mirror) for ' + (a.address || 'unknown')); fetchTaskApplicants(t.taskId); })
+                                          .catch((e) => setMessage('Failed to submit: ' + e.message));
+                                      }}>Send Response</button>
+                                    </div>
+                                  </li>
+                                ))}
+                              </ul>
+                            )
+                          )}
+                        </div>
+                        {posResult && (
+                          <div style={{ marginTop: 12 }}><strong>Selected:</strong> {posResult.join(', ')}</div>
+                        )}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

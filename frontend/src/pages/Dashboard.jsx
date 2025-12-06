@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Card, Metric, ProgressBar, Badge, Button } from '../../components';
+import ClientDashboard from '../../components/ClientDashboard.jsx';
 import { API_ENDPOINTS, apiCall } from '../config/api';
 
 /**
@@ -223,6 +224,11 @@ export const Dashboard = ({ user, contractAddress, contractABI, rpcUrl, chainId 
             ))}
           </div>
         </Card>
+      </div>
+
+      {/* Miner / Client Tools (embedded) */}
+      <div className="container" style={{ marginTop: 'var(--space-8)' }}>
+        <ClientDashboard user={user} contractAddress={contractAddress} contractABI={contractABI} />
       </div>
     </div>
   );

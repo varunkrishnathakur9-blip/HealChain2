@@ -1,51 +1,51 @@
 {
-  "task_id": "3f5f01616668fc4d3d7276efd69c1ecadbebce645262f8957345034fa15a2e1b",
-  "final_accuracy": 0.8572,
+  "task_id": 7462988965383739912029590317584821132188442998752154547317883102335651021593,
+  "final_accuracy": 0.8638,
   "candidate_block": {
-    "modelHash": "b8009da9d3f6ae496e981acc6acc621ef51a1e0e8b29e4660fe8aeae0685b6a5",
-    "modelLink": "ipfs://178485367907448472080857952094269962129",
-    "accCalc_basis_points": 8572,
-    "accCalc": 0.8572,
+    "modelHash": "26ccd4ec68ec28a6676407629c27f0660fb100aa1efdcdd9e80cb7f56d5ca781",
+    "modelLink": "ipfs://715914737111281176415217669363144411",
+    "accCalc_basis_points": 8638,
+    "accCalc": 0.8638,
     "participants": [
       "0xeB365b5D30f7dAeAF70d7a50b98B262140cB7111",
       "0xC26d7b338dC4d3A7A55894FB6F72C9221Ca865D5",
       "0x1d8Ef9a351f11c141B991eC39064773dB8B862Eb"
     ],
     "scoreCommits": [
-      "068487bf973488606466199a4a74447e1a2770be2ffc0f379096e834be3a66cc",
-      "3e4a42bc7f7d6323940e7ab529c158f43dfbf8cfcf6c3ca6f6acfb1cb33bb1f4",
-      "72e02d7a7fe49fbc43b0618bc6a35558b05c1b665f8dae6a758223e8a88ae6c5"
+      "03f2785c4719a74f8141ceca2d013aeffc24c45248c334921bc49463d0eef0ed",
+      "383151fbb556893b0672105c607bcb3c02722f35be45425c8a0376935d9223cd",
+      "f7b491f18a2b5a3e9175ae3dc58154ede21ef430f45a97f4763f0ceb5cb82b2b"
     ],
     "aggregator": "0xeB365b5D30f7dAeAF70d7a50b98B262140cB7111",
-    "signature": "9e0ef99bf6dec7906c3dba2a7891d8b92869e57185298e9f5e60d1b94d054f544413c8ea1646d9ac6948b9b6d58544c0b2fd2006ae706261675ac0d2849fc56f1c"
+    "signature": "c4c73b2bf10f1eb1f79957968130f1c784fe53458d17cf11c93c1404cd7f15af608925b051eb3c81b0023fe06c3d46563d5984940070d06d973d72ec0357e1cf1c"
   },
   "miners": [
     {
       "address": "0xeB365b5D30f7dAeAF70d7a50b98B262140cB7111",
-      "score_commit": "068487bf973488606466199a4a74447e1a2770be2ffc0f379096e834be3a66cc",
-      "commit_timestamp": 1764824150.8154902,
+      "score_commit": "03f2785c4719a74f8141ceca2d013aeffc24c45248c334921bc49463d0eef0ed",
+      "commit_timestamp": 1765037567.23337,
       "revealed_score": 6,
-      "reveal_nonce": 1382562,
-      "reveal_timestamp": 1764824152.8132296
+      "reveal_nonce": 8669683,
+      "reveal_timestamp": 1765037570.4448366
     },
     {
       "address": "0xC26d7b338dC4d3A7A55894FB6F72C9221Ca865D5",
-      "score_commit": "3e4a42bc7f7d6323940e7ab529c158f43dfbf8cfcf6c3ca6f6acfb1cb33bb1f4",
-      "commit_timestamp": 1764824150.9055412,
+      "score_commit": "383151fbb556893b0672105c607bcb3c02722f35be45425c8a0376935d9223cd",
+      "commit_timestamp": 1765037567.3742363,
       "revealed_score": 6,
-      "reveal_nonce": 5995176,
-      "reveal_timestamp": 1764824152.9863122
+      "reveal_nonce": 7906765,
+      "reveal_timestamp": 1765037570.576519
     },
     {
       "address": "0x1d8Ef9a351f11c141B991eC39064773dB8B862Eb",
-      "score_commit": "72e02d7a7fe49fbc43b0618bc6a35558b05c1b665f8dae6a758223e8a88ae6c5",
-      "commit_timestamp": 1764824151.001697,
+      "score_commit": "f7b491f18a2b5a3e9175ae3dc58154ede21ef430f45a97f4763f0ceb5cb82b2b",
+      "commit_timestamp": 1765037567.5212975,
       "revealed_score": 6,
-      "reveal_nonce": 8981051,
-      "reveal_timestamp": 1764824153.1039672
+      "reveal_nonce": 2999141,
+      "reveal_timestamp": 1765037570.7131486
     }
   ],
-  "run_start": 1764824149.9238644,
-  "run_end": 1764824153.3539293,
-  "duration_seconds": 3.4300649166107178
+  "run_start": 1765037521.3857286,
+  "run_end": 1765037571.605338,
+  "duration_seconds": 50.21960949897766
 }

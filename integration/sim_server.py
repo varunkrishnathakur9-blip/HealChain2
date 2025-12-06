@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify, send_file
+import random
 from flask_cors import CORS
 import threading
 import time
@@ -49,14 +50,51 @@ PERSISTED_TASKS_FILE = Path(__file__).resolve().parent / 'published_tasks.json'
 
 # In-memory persisted tasks cache (loaded from disk on startup)
 PERSISTED_TASKS = []
+# Next integer task id to use when generating new tasks
+NEXT_TASK_ID = 1
 
 
 def _load_persisted_tasks():
     global PERSISTED_TASKS
+    global NEXT_TASK_ID
     try:
         if PERSISTED_TASKS_FILE.exists():
             with open(PERSISTED_TASKS_FILE, 'r', encoding='utf-8') as f:
                 PERSISTED_TASKS = json.load(f) or []
+            # Normalize records to ensure applicants list exists
+            for rec in PERSISTED_TASKS:
+                if 'applicants' not in rec:
+                    rec['applicants'] = []
+            # initialize NEXT_TASK_ID as max existing integer taskId + 1
+            max_id = 0
+            for rec in PERSISTED_TASKS:
+                try:
+                    tid = rec.get('taskId')
+                    if tid is None:
+                        continue
+                    # accept int, decimal string, or hex string
+                    v = None
+                    if isinstance(tid, int):
+                        v = int(tid)
+                    else:
+                        s = str(tid)
+                        if s.startswith('0x') or s.startswith('0X'):
+                            try:
+                                v = int(s, 16)
+                                # normalize persisted hex taskId to integer for consistency
+                                rec['taskId'] = v
+                            except Exception:
+                                v = None
+                        else:
+                            try:
+                                v = int(s)
+                            except Exception:
+                                v = None
+                    if v is not None and v > max_id:
+                        max_id = v
+                except Exception:
+                    continue
+            NEXT_TASK_ID = max_id + 1 if max_id >= 1 else NEXT_TASK_ID
         else:
             PERSISTED_TASKS = []
     except Exception:
@@ -79,20 +117,25 @@ def _persist_task_record(payload: dict):
     """
     try:
         record = {
+            # store numeric taskId as-is (may be int or numeric string)
             'taskId': payload.get('taskId'),
             'txHash': payload.get('txHash') or payload.get('tx_hash') or None,
             'dataHash': payload.get('dataHash') or payload.get('data_hash') or payload.get('dataHashHex') or None,
             'publisher': payload.get('publisher') or payload.get('publisherAddress') or None,
             'time': int(time.time()),
-            'meta': {k: v for k, v in payload.items() if k not in ('taskId', 'txHash', 'tx_hash', 'dataHash', 'data_hash', 'publisher', 'publisherAddress')}
+            'meta': {k: v for k, v in payload.items() if k not in ('taskId', 'txHash', 'tx_hash', 'dataHash', 'data_hash', 'publisher', 'publisherAddress')},
+            'applicants': payload.get('applicants') or []
         }
         # Avoid duplicates: if taskId exists, update existing entry
         existing = None
         if record.get('taskId') is not None:
             for e in PERSISTED_TASKS:
-                if str(e.get('taskId')) == str(record.get('taskId')):
-                    existing = e
-                    break
+                try:
+                    if str(e.get('taskId')) == str(record.get('taskId')):
+                        existing = e
+                        break
+                except Exception:
+                    continue
         if existing:
             existing.update(record)
             rec = existing
@@ -112,14 +155,17 @@ def _assign_taskid_to_persisted(tx_hash: str = None, data_hash: str = None, task
     """
     try:
         for rec in PERSISTED_TASKS:
-            if tx_hash and rec.get('txHash') and str(rec.get('txHash')).lower() == str(tx_hash).lower():
-                rec['taskId'] = task_id
-                _save_persisted_tasks()
-                return True
-            if data_hash and rec.get('dataHash') and str(rec.get('dataHash')) == str(data_hash):
-                rec['taskId'] = task_id
-                _save_persisted_tasks()
-                return True
+            try:
+                if tx_hash and rec.get('txHash') and str(rec.get('txHash')).lower() == str(tx_hash).lower():
+                    rec['taskId'] = task_id
+                    _save_persisted_tasks()
+                    return True
+                if data_hash and rec.get('dataHash') and str(rec.get('dataHash')) == str(data_hash):
+                    rec['taskId'] = task_id
+                    _save_persisted_tasks()
+                    return True
+            except Exception:
+                continue
         return False
     except Exception:
         app.logger.exception('Failed to assign task id to persisted record')
@@ -153,26 +199,42 @@ def _run_simulation_thread(task_id=None, tx_hash=None, publish_params=None):
         SIM_CONTEXT['web3_client'] = web3_client
         # Normalize task_id into 32-byte representation for downstream contract calls
         try:
+            generated_task_int = None
             if task_id is None:
-                # Generate a fresh sim task id when none provided (avoid encoding 'None')
+                # Generate a fresh integer task id when none provided
                 try:
-                    if web3_client and not getattr(web3_client, '_mock_mode', False):
-                        sim_task_id = web3_client.w3.keccak(text=f"task_{time.time()}")
-                    else:
-                        # mock mode: use deterministic zero bytes
-                        sim_task_id = (0).to_bytes(32, 'big')
+                    global NEXT_TASK_ID
+                    generated_task_int = int(NEXT_TASK_ID)
+                    NEXT_TASK_ID += 1
                 except Exception:
-                    sim_task_id = (0).to_bytes(32, 'big')
+                    generated_task_int = int(time.time())
+                sim_task_id = int(generated_task_int).to_bytes(32, 'big')
             else:
+                # If task_id provided, accept numeric or numeric-string and convert
                 if isinstance(task_id, int):
                     sim_task_id = int(task_id).to_bytes(32, 'big')
+                    generated_task_int = int(task_id)
                 elif isinstance(task_id, str):
                     s = task_id
+                    # if hex string, parse as hex
                     if s.startswith('0x') or s.startswith('0X'):
-                        sim_task_id = int(s, 16).to_bytes(32, 'big')
+                        try:
+                            v = int(s, 16)
+                            sim_task_id = v.to_bytes(32, 'big')
+                            generated_task_int = v
+                        except Exception:
+                            # fallback to numeric parse
+                            try:
+                                v2 = int(s)
+                                sim_task_id = v2.to_bytes(32, 'big')
+                                generated_task_int = v2
+                            except Exception:
+                                sim_task_id = s.encode('utf-8').rjust(32, b'\x00')[:32]
                     else:
                         try:
-                            sim_task_id = int(s).to_bytes(32, 'big')
+                            v = int(s)
+                            sim_task_id = v.to_bytes(32, 'big')
+                            generated_task_int = v
                         except Exception:
                             sim_task_id = s.encode('utf-8').rjust(32, b'\x00')[:32]
                 elif isinstance(task_id, bytes):
@@ -183,6 +245,11 @@ def _run_simulation_thread(task_id=None, tx_hash=None, publish_params=None):
             sim_task_id = (0).to_bytes(32, 'big')
 
         SIM_CONTEXT['task_id'] = sim_task_id
+        # store integer task id (if available) for persisted records and APIs
+        if 'generated_task_int' in locals() and generated_task_int is not None:
+            SIM_CONTEXT['task_id_int'] = int(generated_task_int)
+        else:
+            SIM_CONTEXT['task_id_int'] = None
         SIM_CONTEXT['publish_params'] = publish_params
         SIM_CONTEXT['applicants'] = []
 
@@ -222,23 +289,19 @@ def _run_simulation_thread(task_id=None, tx_hash=None, publish_params=None):
 
         # Open the task for miner submissions. The frontend will poll
         # /get-applicants and miner scripts will POST to /miner-submit.
-        # Represent the task id as a hex string for readability in persisted records
+        # Use integer task id for persisted records and API-visible state
         try:
-            task_hex = '0x' + sim_task_id.hex()
-        except Exception:
-            task_hex = None
+            task_int = SIM_CONTEXT.get('task_id_int')
+            STATE['status'] = 'open'
+            STATE['last_task_id'] = task_int if task_int is not None else task_id
 
-        STATE['status'] = 'open'
-        STATE['last_task_id'] = task_hex or task_id
-
-        # If we persisted an earlier record (from /run-simulation), update it with generated task id
-        try:
+            # If we persisted an earlier record (from /run-simulation), update it with generated task id
             tx = tx_hash or (publish_params or {}).get('txHash') or (publish_params or {}).get('tx_hash')
             data_h = (publish_params or {}).get('dataHash') or (publish_params or {}).get('data_hash')
-            if task_hex:
-                updated = _assign_taskid_to_persisted(tx_hash=tx, data_hash=data_h, task_id=task_hex)
+            if task_int is not None:
+                updated = _assign_taskid_to_persisted(tx_hash=tx, data_hash=data_h, task_id=task_int)
                 if updated:
-                    app.logger.info('[sim_server] Updated persisted record with generated task id: %s', task_hex)
+                    app.logger.info('[sim_server] Updated persisted record with generated task id: %s', str(task_int))
         except Exception:
             app.logger.exception('Failed updating persisted task with generated id')
 
@@ -408,7 +471,30 @@ def get_applicants():
     Frontend calls this endpoint after seeing the sim server status at
     'awaiting_selection' to fetch the list of miner responses (address, cid, metadata).
     """
-    # Only return applicants when the task is open/receiving/awaiting_selection.
+    # If the client provided a taskId or dataHash, try to return persisted applicants
+    task_id_q = request.args.get('taskId') or request.args.get('task_id') or None
+    data_hash_q = request.args.get('dataHash') or request.args.get('data_hash') or None
+
+    if task_id_q or data_hash_q:
+        # Search persisted tasks for matching record
+        for rec in PERSISTED_TASKS:
+            try:
+                if task_id_q and rec.get('taskId') is not None:
+                    # Compare numerically if possible, otherwise compare string form
+                    try:
+                        if int(rec.get('taskId')) == int(task_id_q):
+                            return jsonify({'status': 'persisted', 'applicants': rec.get('applicants', [])}), 200
+                    except Exception:
+                        if str(rec.get('taskId')) == str(task_id_q):
+                            return jsonify({'status': 'persisted', 'applicants': rec.get('applicants', [])}), 200
+                if data_hash_q and rec.get('dataHash') and str(rec.get('dataHash')) == str(data_hash_q):
+                    return jsonify({'status': 'persisted', 'applicants': rec.get('applicants', [])}), 200
+            except Exception:
+                continue
+        # Not found — return empty
+        return jsonify({'status': 'not_found', 'applicants': []}), 200
+
+    # Only return in-memory applicants when the task is open/receiving/awaiting_selection.
     if STATE.get('status') not in ('open', 'receiving_applicants', 'awaiting_selection'):
         app.logger.debug('[sim_server] /get-applicants called but status not open/receiving/awaiting; returning empty list')
         return jsonify({'applicants': []}), 200
@@ -464,7 +550,37 @@ def miner_submit():
             # If IPFS upload fails or handler not available, store the inline proof
             applicant['proof_inline'] = proof_inline
 
+    # Append to in-memory applicants for immediate selection flows
     SIM_CONTEXT.setdefault('applicants', []).append(applicant)
+
+    # Also, if the payload included a taskId or dataHash, persist this applicant into
+    # the corresponding persisted task record so dashboards can later fetch applicants
+    task_id = payload.get('taskId') or payload.get('task_id') or payload.get('taskHex')
+    data_hash = payload.get('dataHash') or payload.get('data_hash')
+    if task_id or data_hash:
+        updated = False
+        for rec in PERSISTED_TASKS:
+            try:
+                if task_id and rec.get('taskId') is not None:
+                    try:
+                        if int(rec.get('taskId')) == int(task_id):
+                            rec.setdefault('applicants', []).append(applicant)
+                            updated = True
+                            break
+                    except Exception:
+                        if str(rec.get('taskId')) == str(task_id):
+                            rec.setdefault('applicants', []).append(applicant)
+                            updated = True
+                            break
+                if data_hash and rec.get('dataHash') and str(rec.get('dataHash')) == str(data_hash):
+                    rec.setdefault('applicants', []).append(applicant)
+                    updated = True
+                    break
+            except Exception:
+                continue
+        if updated:
+            _save_persisted_tasks()
+
     # Set state to receiving_applicants to indicate live submissions
     if STATE.get('status') == 'open':
         STATE['status'] = 'receiving_applicants'
@@ -495,6 +611,58 @@ def select_participants():
     t.start()
     app.logger.info('[sim_server] Resuming simulation with %d selected participants', len(selected))
     return jsonify({'status': 'resumed', 'selected_count': len(selected)}), 202
+
+
+@app.route('/run-pos-selection', methods=['POST'])
+def run_pos_selection():
+    """Server-side PoS selection: pick `k` applicants (default 1) and resume simulation.
+
+    Expected JSON: { 'k': 1 }
+    This endpoint chooses participants from SIM_CONTEXT['applicants'] and starts
+    the continuation thread with the selected addresses.
+    """
+    payload = request.get_json(silent=True) or {}
+    k = int(payload.get('k', 1))
+
+    applicants = SIM_CONTEXT.get('applicants') or []
+    if not applicants:
+        return jsonify({'error': 'No applicants available for selection'}), 409
+
+    # Extract addresses
+    addrs = [a.get('address') for a in applicants if a.get('address')]
+    if not addrs:
+        return jsonify({'error': 'Applicant addresses not found'}), 409
+
+    # Simple PoS selection: weighted random by optional metadata.stake or uniform
+    weights = []
+    for a in applicants:
+        meta = a.get('metadata') or {}
+        stake = None
+        try:
+            stake = float(meta.get('stake')) if meta and meta.get('stake') is not None else None
+        except Exception:
+            stake = None
+        weights.append(stake if stake is not None else 1.0)
+
+    # Normalize and select k unique addresses
+    total = sum(weights)
+    if total <= 0:
+        probs = [1/len(addrs)] * len(addrs)
+    else:
+        probs = [w/total for w in weights]
+
+    selected = []
+    available = list(range(len(addrs)))
+    while len(selected) < min(k, len(addrs)) and available:
+        pick = random.choices(available, weights=[probs[i] for i in available], k=1)[0]
+        selected.append(addrs[pick])
+        available.remove(pick)
+
+    # Start continuation with selected participants
+    t = threading.Thread(target=_continue_simulation_thread, args=(selected,), daemon=True)
+    t.start()
+    app.logger.info('[sim_server] run-pos-selection picked %d participants: %s', len(selected), selected)
+    return jsonify({'status': 'selection_started', 'selected': selected}), 202
 
 
 @app.route('/start-pos', methods=['POST'])
@@ -589,8 +757,14 @@ def _continue_simulation_thread(selected_miners):
             # Save a minimal results file
             out_path = Path(__file__).resolve().parent.parent / 'simulation_results.json'
             try:
+                # Prefer storing integer task id if available, fall back to hex
+                try:
+                    task_int = SIM_CONTEXT.get('task_id_int')
+                    tid_out = int(task_int) if task_int is not None else task_ID.hex()
+                except Exception:
+                    tid_out = task_ID.hex()
                 results = {
-                    'task_id': task_ID.hex(),
+                    'task_id': tid_out,
                     'participants': [m.address for m in selected_miners_objs],
                     'aggregator': agg_addr_selected
                 }
