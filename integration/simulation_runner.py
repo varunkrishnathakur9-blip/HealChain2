@@ -11,19 +11,15 @@ from pathlib import Path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from integration.web3_client import Web3Client
-from crypto.ndd_fe import NDD_FE
 from federated_layer.task_publisher.publisher import TaskPublisher
 from federated_layer.clients.miner import Miner
-from federated_layer.aggregator.aggregator import Aggregator # Note: Changed to Aggregator to match class name
+from federated_layer.aggregator.aggregator import Aggregator
 import logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # --- 0. Setup and Initialization ---
 def setup_environment():
     """Initializes crypto tools and assigns accounts/roles."""
-    
-    # Initialize NDD_FE
-    ndd_fe = NDD_FE()
     
     # Initialize Web3Client
     web3_client = Web3Client() 
@@ -57,14 +53,13 @@ def setup_environment():
     initial_model_W0 = np.random.rand(*MODEL_SHAPE)
     validation_set = "simulated_validation_data"
 
-    # Initialize roles
-    publisher = TaskPublisher(initial_model_W0, TP_ADDR, ndd_fe)
+    # Initialize roles (no longer need ndd_fe instance - using module-level functions)
+    publisher = TaskPublisher(initial_model_W0, TP_ADDR)
     
-    # Note: Aggregator now takes NDD_FE instance
-    aggregator = Aggregator(initial_model_W0, AGG_ADDR, ndd_fe, validation_set, max_rounds=5)
+    aggregator = Aggregator(initial_model_W0, AGG_ADDR, validation_set, max_rounds=5)
     
     miners = [
-        Miner(f"dataset_{i}", addr, ndd_fe) for i, addr in enumerate(MINER_ADDRS)
+        Miner(f"dataset_{i}", addr) for i, addr in enumerate(MINER_ADDRS)
     ]
 
     # Ensure all components share the same Web3 client (single initialized instance)
@@ -78,11 +73,11 @@ def setup_environment():
     
     pk_A = aggregator.pk_A
     print("--- Environment Setup Complete ---")
-    return publisher, aggregator, miners, pk_A, ndd_fe, web3_client
+    return publisher, aggregator, miners, pk_A, web3_client
 
 # --- 1. Orchestration and Simulation ---
 
-def run_healchain_simulation(publisher, aggregator, miners, pk_A, ndd_fe, web3_client, publish_params=None):
+def run_healchain_simulation(publisher, aggregator, miners, pk_A, web3_client, publish_params=None):
     
     # --- M1: Task Publishing ---
     if web3_client._mock_mode:
@@ -164,11 +159,16 @@ def run_healchain_simulation(publisher, aggregator, miners, pk_A, ndd_fe, web3_c
 
     # --- M2: Miner Selection & Key Derivation ---
     # Let TP verify miner proofs and run PoS selection (no forced aggregator override)
-    agg_addr_selected, sk_FE, weights_y = publisher.setup_round(
+    agg_addr_selected, sk_FE, weights_y, valid_miner_addrs = publisher.setup_round(
         task_ID, miner_responses, round_ctr=0
     )
     aggregator.set_functional_key(sk_FE)
     pk_TP = publisher.pk_TP
+    
+    # Filter miners to only those who passed proof verification
+    valid_miners = [m for m in miners if m.address in valid_miner_addrs]
+    print(f"[SIM] {len(valid_miners)} miners passed verification out of {len(miners)}")
+    
     # Ensure the off-chain Aggregator instance uses the PoS-selected address so
     # on-chain `onlyAggregator` checks pass when publishing the final block.
     # The selected address is expected to be one of the node's unlocked accounts
@@ -191,9 +191,9 @@ def run_healchain_simulation(publisher, aggregator, miners, pk_A, ndd_fe, web3_c
     while status == "RETRAIN" and time.time() < deadline:
         print(f"\nRound {aggregator.round_ctr + 1} Starting...")
         
-        # M3: Miners train (and commit score inside this call)
+        # M3: Only valid miners train (and commit score inside this call)
         submissions = []
-        for miner in miners:
+        for miner in valid_miners:
             U_i, score_commit, pk_i, score_int, nonce_i = miner.run_training_round(
                 W_t, pk_TP, pk_A, task_ID, aggregator.round_ctr
             )
@@ -213,7 +213,7 @@ def run_healchain_simulation(publisher, aggregator, miners, pk_A, ndd_fe, web3_c
             W_new, acc_calc, score_commits = result
             
             # Form Candidate Block Payload
-            participant_addrs = [m.address for m in miners]
+            participant_addrs = [m.address for m in valid_miners]
             candidate_block_payload = aggregator.form_candidate_block(
                 task_ID, W_new, acc_calc, score_commits, participant_addrs
             )
@@ -231,9 +231,9 @@ def run_healchain_simulation(publisher, aggregator, miners, pk_A, ndd_fe, web3_c
     if status == "AWAITING_VERIFICATION":
         print(f"\n--- M5: Verifying Candidate Block ---")
         
-        # Simulate Miners verifying the block
+        # Simulate valid miners verifying the block
         votes = []
-        for miner in miners:
+        for miner in valid_miners:
             is_valid = miner.verify_candidate_block(candidate_block_payload, task_ID)
             votes.append(is_valid)
             
@@ -251,11 +251,11 @@ def run_healchain_simulation(publisher, aggregator, miners, pk_A, ndd_fe, web3_c
             
             # 2. Miner Score Reveals
             print(f"--- Executing Miner Score Reveals ---")
-            for miner in miners:
+            for miner in valid_miners:
                 # Use the Miner class method we created
                 miner.reveal_score_on_chain(task_ID)
                 
-            print("✅ All miners revealed scores.")
+            print("✅ All valid miners revealed scores.")
 
             # 3. Final Reward Distribution
             print("--- Distributing Rewards ---")
@@ -284,7 +284,7 @@ def run_healchain_simulation(publisher, aggregator, miners, pk_A, ndd_fe, web3_c
                 }
 
                 miners_info = []
-                for m in miners:
+                for m in valid_miners:
                     # miners may have a reveal_data attribute mapping task_id hex to details
                     reveal_map = getattr(m, 'reveal_data', {})
                     # try both hex key and integer key for compatibility
@@ -323,8 +323,8 @@ def run_healchain_simulation(publisher, aggregator, miners, pk_A, ndd_fe, web3_c
 # --- Execution ---
 if __name__ == "__main__":
     try:
-        publisher, aggregator, miners, pk_A, ndd_fe, web3_client = setup_environment()
-        run_healchain_simulation(publisher, aggregator, miners, pk_A, ndd_fe, web3_client)
+        publisher, aggregator, miners, pk_A, web3_client = setup_environment()
+        run_healchain_simulation(publisher, aggregator, miners, pk_A, web3_client)
     except Exception as e:
         print(f"\nAn error occurred during execution: {e}")
         traceback.print_exc(file=sys.stdout)

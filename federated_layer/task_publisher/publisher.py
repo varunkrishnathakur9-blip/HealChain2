@@ -6,14 +6,14 @@ from eth_utils import keccak
 
 # Import your modules (adjust paths if necessary)
 from integration.web3_client import Web3Client 
-from crypto.ndd_fe import NDD_FE, curve
+from crypto import ndd_fe
+from crypto.ndd_fe import key_gen, key_derive, curve
 from integration.ipfs_handler import IPFSHandler
 
 class TaskPublisher:
-    def __init__(self, initial_model: np.ndarray, account_address: str, ndd_fe_instance: NDD_FE):
-        self.ndd_fe = ndd_fe_instance
-        # Generate TP keys locally (for NDD-FE)
-        self.pk_TP, self.sk_TP = self.ndd_fe.key_gen()
+    def __init__(self, initial_model: np.ndarray, account_address: str):
+        # Generate TP keys locally (for NDD-FE) using module-level functions
+        self.pk_TP, self.sk_TP = key_gen()
         
         self.address = account_address
         self.W0 = initial_model
@@ -316,21 +316,26 @@ class TaskPublisher:
         weights_y = [1.0 / h] * h
 
         # 4. Generate Functional Key sk_FE (Algorithm 2, Line 20)
-        # "NDD_FE.KeyDerive(...)"
+        # Using module-level key_derive function
+        # Use scale_weights=1000 to preserve weight precision while keeping values in BSGS bounds
+        # With 3 miners, weights=[0.333...], scale=1000 -> scaled_weights=[333,333,333]
+        # Max aggregated value ~= num_miners * max_int(1023) * 333 ~= 1M, within bsgs_bound
         print("[TP] Deriving sk_FE for Aggregator...")
-        sk_FE = self.ndd_fe.key_derive(
+        sk_FE = key_derive(
             sk_TP=self.sk_TP, 
             pk_miners=miner_pks, 
             weights_y=weights_y, 
             ctr=round_ctr, 
-            task_ID=self._normalize_task_id(task_ID)
+            task_id=self._normalize_task_id(task_ID),
+            scale_weights=1000
         )
         
         print(f"[TP] sk_FE derived. (Value hidden for security)")
 
         # 5. Secure Delivery (Algorithm 2, Line 21)
         # In this simulation, we return it. In production, this is encrypted with Aggregator's PK.
-        return aggregator_addr, sk_FE, weights_y
+        # Also return the list of valid miner addresses so the simulation can filter participants
+        return aggregator_addr, sk_FE, weights_y, addresses
 
     def verify_miner_proof(self, proof: dict, min_dataset_size: int = 500) -> bool:
         """Verify a miner's capability proof fetched from IPFS.

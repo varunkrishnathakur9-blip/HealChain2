@@ -12,21 +12,20 @@ import logging
 from web3 import Web3
 from eth_account.messages import encode_defunct
 from integration.web3_client import Web3Client 
-from crypto.ndd_fe import NDD_FE 
+from crypto.ndd_fe import key_gen, decrypt_aggregate
 from crypto.dgc import DGC 
 
 class Aggregator:
     def __init__(self, 
                  initial_model: np.ndarray, 
                  account_address: str, 
-                 ndd_fe_instance: NDD_FE,
                  validation_set,
                  max_rounds: int = 100):
         
-        self.pk_A, self.sk_A = ndd_fe_instance.key_gen() # Aggregator's keys
+        # Generate Aggregator's keys using module-level function
+        self.pk_A, self.sk_A = key_gen()
         self.address = account_address
-        self.ndd_fe = ndd_fe_instance
-        self.dgc_tool = DGC() # Required for decompression
+        self.dgc_tool = DGC(tau=0.9, max_int=1023)  # Required for decompression
         self.web3_client = Web3Client()
         self.validation_set = validation_set
         self.max_rounds = max_rounds
@@ -34,7 +33,8 @@ class Aggregator:
         # Current round state
         self.W_current = initial_model
         self.round_ctr = 0
-        self.sk_FE = None # Functional key received from TP (M2)
+        self.sk_FE = None  # Functional key received from TP (M2)
+        self._sk_FE_set = False  # Track if sk_FE was explicitly set
         
         # --- FIX: Generate a local key for signing blocks in simulation ---
         # This prevents the need for os.environ variables and fixes the missing key error
@@ -44,22 +44,22 @@ class Aggregator:
     def set_functional_key(self, sk_FE: int):
         """Sets the functional key received securely from the Task Publisher (M2)."""
         self.sk_FE = sk_FE
+        self._sk_FE_set = True  # Track that sk_FE was explicitly set
     
     # --- DGC Helper: Decompression (M4) ---
-    def dgc_decompress(self, recovered_vector: np.ndarray, model_shape: Tuple) -> np.ndarray:
+    def dgc_decompress(self, recovered_vector: np.ndarray, model_shape: Tuple, scale: float = 1.0) -> np.ndarray:
         """
         DGC Decompression (Algorithm 4, Line 33).
-        Restores the sparse aggregated update into a dense vector matching the global model size.
+        Restores the dense integer aggregated vector to float values matching the global model size.
         """
         if recovered_vector is None:
             return np.zeros(model_shape, dtype=np.float64)
-            
-        decompressed_update = self.dgc_tool.decompress(recovered_vector)
         
-        # Ensure shape matches (handle potential flat vs shaped arrays)
-        if decompressed_update.shape != model_shape:
-             return decompressed_update.reshape(model_shape)
-             
+        # Use decompress_from_dense_int to convert integer vector back to float
+        decompressed_update = self.dgc_tool.decompress_from_dense_int(
+            recovered_vector, model_shape, scale
+        )
+        
         return decompressed_update
 
     # --- Model Evaluation (M4) ---
@@ -83,7 +83,7 @@ class Aggregator:
                                       weights_y: List[float], 
                                       acc_req: float) -> Tuple[str, object]:
         
-        if not self.sk_FE:
+        if not self._sk_FE_set:
             raise ValueError("Functional key (sk_FE) not set for the current task.")
 
         self.round_ctr += 1
@@ -100,13 +100,64 @@ class Aggregator:
         score_commits = [s[1] for s in valid_submissions]
         
         # 2. NDD-FE Decrypt and BSGS Recovery (Algorithm 4, Lines 15-26)
-        recovered_aggregate_vector = self.ndd_fe.decrypt_aggregate(
-            sk_FE=self.sk_FE,
-            sk_A=self.sk_A, 
-            pk_TP=pk_TP,
-            ciphertexts_U=ciphertexts_U, 
-            weights_y=weights_y
-        )
+        # Prefer chunked recovery to keep per-parameter BSGS bounds modest.
+        # `chunked_decrypt` will call `decrypt_aggregate` on slices of the
+        # parameter vector and estimate a safe `bsgs_bound` per chunk.
+        try:
+            original_L = len(ciphertexts_U[0])
+        except Exception:
+            raise ValueError("Invalid ciphertexts_U structure for decryption")
+
+        # 2. NDD-FE Decrypt and BSGS Recovery (Algorithm 4, Lines 15-26)
+        # Using module-level decrypt_aggregate function (ndd_fe is fixed)
+        # Estimate a safe bsgs_bound from DGC max_int and scaled weights
+        try:
+            from crypto.dgc import DGC as _DGC
+            max_int = _DGC().max_int
+        except Exception:
+            max_int = 1023
+        scale_weights = 1000
+        weight_scaled_list = [int(round(w * scale_weights)) for w in weights_y]
+        sum_abs_weight_scaled = sum(abs(w) for w in weight_scaled_list)
+        # conservative per-parameter worst-case magnitude
+        max_abs_S = int(sum_abs_weight_scaled * max_int)
+        # choose bound: at least 2^24, but large enough for expected S, capped to 2^30
+        computed_bound = max(1 << 24, max(1024, max_abs_S + 16))
+        bsgs_bound = min(computed_bound, 1 << 30)
+
+        # Attempt decrypt with computed bound; retry with larger bounds if needed
+        recovered_aggregate_vector = None
+        attempt = 0
+        attempt_bound = bsgs_bound
+        max_bound_cap = 1 << 34
+        while attempt_bound <= max_bound_cap:
+            try:
+                logging.info(f"Attempting FE decrypt with bsgs_bound={attempt_bound}")
+                recovered_aggregate_vector = decrypt_aggregate(
+                    sk_FE=self.sk_FE,
+                    sk_A=self.sk_A,
+                    pk_TP=pk_TP,
+                    ciphertexts_U=ciphertexts_U,
+                    weights_y=weights_y,
+                    scale_weights=scale_weights,
+                    bsgs_bound=attempt_bound
+                )
+                break
+            except ValueError as ve:
+                msg = str(ve)
+                if 'BSGS' in msg or 'BSGS bound' in msg:
+                    logging.warning(f"FE decrypt attempt with bound {attempt_bound} failed: {ve}")
+                    attempt += 1
+                    # geometric increase
+                    next_bound = min(max_bound_cap, attempt_bound * 4)
+                    if next_bound <= attempt_bound:
+                        break
+                    attempt_bound = next_bound
+                    continue
+                else:
+                    raise
+        if recovered_aggregate_vector is None:
+            raise ValueError("Failed to recover aggregate vector: BSGS failed for all attempted bounds")
         
         if recovered_aggregate_vector is None:
             raise ValueError("Failed to recover aggregate vector from NDD-FE decryption")

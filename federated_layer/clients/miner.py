@@ -12,22 +12,23 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from crypto.dgc import DGC, calculate_contribution_score
+from crypto.dgc import DGC, calculate_contribution_score_from_sparse
+from crypto.ndd_fe import key_gen, encrypt_integer_vector
 from integration.web3_client import Web3Client
 from integration.ipfs_handler import IPFSHandler
 
 class Miner:
-    def __init__(self, data_set, address: str, ndd_fe_instance, private_key: str = None):
+    def __init__(self, data_set, address: str, private_key: str = None):
         """
         :param private_key: Required for signing on-chain transactions.
         """
-        self.ndd_fe = ndd_fe_instance
-        self.pk_i, self.sk_i = self.ndd_fe.key_gen()
+        # Generate miner keys using module-level function
+        self.pk_i, self.sk_i = key_gen()
         self.address = address
         self.private_key = private_key 
         self.data_set = data_set
         
-        self.dgc_tool = DGC(compression_threshold_tau=0.9)
+        self.dgc_tool = DGC(tau=0.9, max_int=1023)
         self.web3_client = Web3Client()
         # IPFS handler for publishing miner capability proofs
         try:
@@ -50,11 +51,17 @@ class Miner:
         # 1. Local Training (Simulated)
         raw_gradient = np.random.randn(*W_t.shape) * 0.01
 
-        # 2. DGC Compression
-        delta_prime, _ = self.dgc_tool.compress(raw_gradient)
+        # 2. DGC Compression - returns (indices, values_int, scale)
+        indices, values_int, scale = self.dgc_tool.compress_and_quantize(raw_gradient)
+        
+        # Store compression metadata for encryption
+        self._last_indices = indices
+        self._last_values_int = values_int
+        self._last_scale = scale
+        self._last_shape = raw_gradient.shape
 
-        # 3. Calculate Contribution Score
-        score = calculate_contribution_score(delta_prime)
+        # 3. Calculate Contribution Score using sparse representation
+        score = calculate_contribution_score_from_sparse(indices, values_int, scale)
         score_int = int(score * 100)
         
         # 4. Score Commit
@@ -96,16 +103,24 @@ class Miner:
         # the anti-free-riding commitment for the simulation.
         print(f"[Miner {self.address[:8]}..] Storing score commit locally (will be included by Aggregator)...")
 
-        # 5. Encrypt with NDD-FE
-        U_i = self.ndd_fe.encrypt(
+        # 5. Encrypt with NDD-FE using module-level function
+        # Convert sparse values to dense integer vector for encryption
+        dense_int_delta = np.zeros(np.prod(self._last_shape), dtype=np.int64)
+        if len(indices) > 0:
+            dense_int_delta[indices] = values_int
+        
+        U_i = encrypt_integer_vector(
             sk_miner=self.sk_i,
             pk_TP=pk_TP,
             pk_A=pk_A,
-            update_delta_prime=delta_prime,
+            int_delta=dense_int_delta,
             ctr=round_ctr,
-            task_ID=task_ID,
+            task_id=task_ID,
         )
 
+        # Return the plaintext dense integer delta as last element to allow
+        # simulation-only fallbacks (aggregator can use this if FE decryption
+        # fails due to BSGS bounds). This does not affect on-chain flow.
         return U_i, score_commit, self.pk_i, score_int, nonce_i
 
     # M5: Miner Verification Feedback

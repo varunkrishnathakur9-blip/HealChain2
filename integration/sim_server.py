@@ -36,7 +36,6 @@ SIM_CONTEXT = {
     'aggregator': None,
     'miners': None,
     'pk_A': None,
-    'ndd_fe': None,
     'web3_client': None,
     'task_id': None,
     'publish_params': None,
@@ -186,7 +185,7 @@ def _run_simulation_thread(task_id=None, tx_hash=None, publish_params=None):
         STATE['last_tx'] = tx_hash
 
         # Setup environment
-        publisher, aggregator, miners, pk_A, ndd_fe, web3_client = setup_environment()
+        publisher, aggregator, miners, pk_A, web3_client = setup_environment()
 
         # Store environment objects for later continuation; do NOT auto-run
         # miner discovery here. The new decentralized flow expects miners to
@@ -195,7 +194,6 @@ def _run_simulation_thread(task_id=None, tx_hash=None, publish_params=None):
         SIM_CONTEXT['aggregator'] = aggregator
         SIM_CONTEXT['miners'] = miners
         SIM_CONTEXT['pk_A'] = pk_A
-        SIM_CONTEXT['ndd_fe'] = ndd_fe
         SIM_CONTEXT['web3_client'] = web3_client
         # Normalize task_id into 32-byte representation for downstream contract calls
         try:
@@ -681,7 +679,6 @@ def _continue_simulation_thread(selected_miners):
         aggregator = SIM_CONTEXT.get('aggregator')
         miners = SIM_CONTEXT.get('miners')
         pk_A = SIM_CONTEXT.get('pk_A')
-        ndd_fe = SIM_CONTEXT.get('ndd_fe')
         web3_client = SIM_CONTEXT.get('web3_client')
         publish_params = SIM_CONTEXT.get('publish_params') or {}
         task_ID = SIM_CONTEXT.get('task_id')
@@ -698,9 +695,11 @@ def _continue_simulation_thread(selected_miners):
         selected_miners_objs = [m for m in miners if m.address in selected_miners]
 
         # Run PoS selection among selected participants only
-        agg_addr_selected, sk_FE, weights_y = publisher.setup_round(
+        agg_addr_selected, sk_FE, weights_y, valid_miner_addrs = publisher.setup_round(
             task_ID, selected_responses, round_ctr=0
         )
+        # Filter selected_miners_objs to only those who passed verification
+        selected_miners_objs = [m for m in selected_miners_objs if m.address in valid_miner_addrs]
         aggregator.set_functional_key(sk_FE)
         try:
             aggregator.address = agg_addr_selected
