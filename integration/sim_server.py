@@ -695,8 +695,10 @@ def _continue_simulation_thread(selected_miners):
         selected_miners_objs = [m for m in miners if m.address in selected_miners]
 
         # Run PoS selection among selected participants only
+        # Store the round_ctr used to derive sk_FE - miners MUST use the same ctr value
+        sk_FE_ctr = 0
         agg_addr_selected, sk_FE, weights_y, valid_miner_addrs = publisher.setup_round(
-            task_ID, selected_responses, round_ctr=0
+            task_ID, selected_responses, round_ctr=sk_FE_ctr
         )
         # Filter selected_miners_objs to only those who passed verification
         selected_miners_objs = [m for m in selected_miners_objs if m.address in valid_miner_addrs]
@@ -716,8 +718,9 @@ def _continue_simulation_thread(selected_miners):
         while status == 'RETRAIN' and time.time() < deadline:
             submissions = []
             for miner in selected_miners_objs:
+                # Use sk_FE_ctr (not aggregator.round_ctr) to match sk_FE derivation
                 U_i, score_commit, pk_i, score_int, nonce_i = miner.run_training_round(
-                    W_t, publisher.pk_TP, pk_A, task_ID, aggregator.round_ctr
+                    W_t, publisher.pk_TP, pk_A, task_ID, sk_FE_ctr
                 )
                 submissions.append((U_i, score_commit, pk_i, score_int, nonce_i))
 

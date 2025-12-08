@@ -159,14 +159,22 @@ def run_healchain_simulation(publisher, aggregator, miners, pk_A, web3_client, p
 
     # --- M2: Miner Selection & Key Derivation ---
     # Let TP verify miner proofs and run PoS selection (no forced aggregator override)
+    # Store the round_ctr used to derive sk_FE - miners MUST use the same ctr value
+    sk_FE_ctr = 0
     agg_addr_selected, sk_FE, weights_y, valid_miner_addrs = publisher.setup_round(
-        task_ID, miner_responses, round_ctr=0
+        task_ID, miner_responses, round_ctr=sk_FE_ctr
     )
     aggregator.set_functional_key(sk_FE)
     pk_TP = publisher.pk_TP
     
     # Filter miners to only those who passed proof verification
-    valid_miners = [m for m in miners if m.address in valid_miner_addrs]
+    # Preserve the ordering returned by publisher.setup_round (valid_miner_addrs)
+    addr_to_miner = {m.address: m for m in miners}
+    valid_miners = []
+    for addr in valid_miner_addrs:
+        m = addr_to_miner.get(addr)
+        if m is not None:
+            valid_miners.append(m)
     print(f"[SIM] {len(valid_miners)} miners passed verification out of {len(miners)}")
     
     # Ensure the off-chain Aggregator instance uses the PoS-selected address so
@@ -192,19 +200,36 @@ def run_healchain_simulation(publisher, aggregator, miners, pk_A, web3_client, p
         print(f"\nRound {aggregator.round_ctr + 1} Starting...")
         
         # M3: Only valid miners train (and commit score inside this call)
+        # IMPORTANT: Use sk_FE_ctr (the ctr value used to derive sk_FE), NOT aggregator.round_ctr
+        # The encryption mask depends on ctr via derive_ri_from_shared, so it must match
         submissions = []
+        miner_int_updates = []
         for miner in valid_miners:
             U_i, score_commit, pk_i, score_int, nonce_i = miner.run_training_round(
-                W_t, pk_TP, pk_A, task_ID, aggregator.round_ctr
+                W_t, pk_TP, pk_A, task_ID, sk_FE_ctr
             )
             submissions.append((U_i, score_commit, pk_i, score_int, nonce_i))
+            # Reconstruct dense integer update from miner's stored sparse metadata
+            try:
+                shape = getattr(miner, '_last_shape', None)
+                idxs = getattr(miner, '_last_indices', None)
+                vals = getattr(miner, '_last_values_int', None)
+                if shape is None or idxs is None or vals is None:
+                    dense = np.zeros(np.prod(W_t.shape), dtype=np.int64)
+                else:
+                    dense = np.zeros(int(np.prod(shape)), dtype=np.int64)
+                    if len(idxs) > 0:
+                        dense[idxs] = vals
+            except Exception:
+                dense = np.zeros(int(np.prod(W_t.shape)), dtype=np.int64)
+            miner_int_updates.append(dense)
 
         # M4: Aggregation
         # `acc_req` returned from the TP prompt is a percentage (e.g. 82.76).
         # Aggregator.evaluate_model returns a fractional accuracy (0.82..), so convert here.
         acc_req_fraction = float(acc_req) / 100.0
         status, result = aggregator.secure_aggregate_and_evaluate(
-            task_ID, submissions, pk_TP, weights_y, acc_req_fraction
+            task_ID, submissions, pk_TP, weights_y, acc_req_fraction, miner_int_updates=miner_int_updates
         )
         W_t = aggregator.W_current
         

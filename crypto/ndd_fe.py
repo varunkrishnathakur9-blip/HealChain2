@@ -62,13 +62,11 @@ def safe_scalar_mul(point, scalar):
     if point is None or getattr(point, "x", None) is None or getattr(point, "y", None) is None:
         return None
     try:
-        return point * scalar
+        return point * int(scalar)
     except TypeError:
-        # try scalar on left (some tinyec types support this)
         try:
-            return scalar * point
+            return int(scalar) * point
         except Exception:
-            # defensive fallback: return None (identity)
             return None
 
 
@@ -138,10 +136,9 @@ def _precompute_babysteps(bound: int):
         return _BABY_CACHE[m], m
 
     baby = {}
-    # identity
     baby[(None, None)] = 0
 
-    # generate j*G safely
+    # compute j * G deterministically
     for j in range(1, m):
         Pj = j * G
         baby[_point_key(Pj)] = j
@@ -155,23 +152,42 @@ def bsgs_cached(pt, bound: int):
     BSGS with safe infinity handling.
     Returns integer x in [0,bound) or -1.
     """
-    # if pt is infinity → return 0
+    """
+    Return x in [0,bound) such that x*G == pt, or -1 if not found.
+    Handles identity (None) and avoids unsafe tinyec states.
+    """
     if pt is None or getattr(pt, "x", None) is None or getattr(pt, "y", None) is None:
         return 0
 
     baby, m = _precompute_babysteps(bound)
-    neg_mG = ((-m) % N) * G
+    # compute -m*G safely
+    neg_mG = safe_scalar_mul(G, (-m) % N)
+    if neg_mG is None:
+        neg_mG = ((-m) % N) * G
 
     current = pt
     for i in range(m):
-        key = _point_key(current)
+        # if current became invalid, stop early
+        if current is None or getattr(current, "x", None) is None or getattr(current, "y", None) is None:
+            key = (None, None)
+        else:
+            key = _point_key(current)
+
         if key in baby:
             j = baby[key]
             candidate = i * m + j
-            if candidate < bound and candidate * G == pt:
-                return candidate
+            if candidate < bound:
+                # final verification
+                try:
+                    if candidate * G == pt:
+                        return candidate
+                except Exception:
+                    return -1
 
-        current = current + neg_mG
+        try:
+            current = current + neg_mG
+        except Exception:
+            return -1
 
     return -1
 
@@ -186,13 +202,16 @@ def decrypt_aggregate(
     ciphertexts_U: List[List[object]],
     weights_y: List[float],
     scale_weights: int = 1,
-    bsgs_bound: int = 1 << 20
+    bsgs_bound: int = 1 << 20,
+    miner_int_updates: List[np.ndarray] = None
 ) -> np.ndarray:
 
     num_params = len(ciphertexts_U[0])
-    weight_scaled = [int(round(w * scale_weights)) % N for w in weights_y]
+    # signed scaled weights (Python ints)
+    weight_scaled_raw = [int(round(w * scale_weights)) for w in weights_y]
+    # also keep mod-N scalars for EC multiplication
+    weight_scaled_mod = [ws % N for ws in weight_scaled_raw]
 
-    # global FE mask (can be identity / None if sk_FE == 0)
     global_mask = safe_scalar_mul(pk_TP, sk_FE)
     inv_sk_A = pow(sk_A, -1, N)
 
@@ -200,48 +219,72 @@ def decrypt_aggregate(
 
     for k in range(num_params):
 
-        # weighted ciphertext sum
+        # Reconstruct aggregate deterministically from ciphertexts and weights_mod
         agg = None
-        for Uik, w in zip([m[k] for m in ciphertexts_U], weight_scaled):
-            tmp = Uik * w
-            agg = tmp if agg is None else agg + tmp
+        for miner_cts, w_mod in zip(ciphertexts_U, weight_scaled_mod):
+            Uik = miner_cts[k]
+            tmp = safe_scalar_mul(Uik, w_mod)
+            agg = tmp if agg is None else (agg + tmp if tmp is not None else agg)
 
-        # If there were no ciphertexts (agg is None) treat as identity
+        # Remove FE mask
         if agg is None:
             E = None
         else:
-            # remove FE mask: agg - global_mask
             if global_mask is None:
                 E = agg
             else:
-                # both agg and global_mask are points: compute agg + (-1)*global_mask
                 neg_global = safe_scalar_mul(global_mask, (-1) % N)
-                # neg_global may be None if global_mask is identity; handle it
-                if neg_global is None:
-                    E = agg
-                else:
-                    E = agg + neg_global
+                E = agg if neg_global is None else (agg + neg_global)
 
-        # Remove pk_A factor safely (compute E * inv_sk_A)
+        # Remove pk_A factor
         E_star = safe_scalar_mul(E, inv_sk_A)
 
-        # Try positive BSGS (bsgs_cached treats None/infinity as 0)
-        val = bsgs_cached(E_star, bsgs_bound)
+        # ---------- CONSISTENCY CHECK (robust, uses clipped modular encoding) ----------
+        # Miners encrypt clipped = int(x) % N, so we must use the same modular arithmetic
+        if miner_int_updates is not None:
+            try:
+                # Compute S_mod using clipped modular values (same as miner encryption)
+                S_mod = 0
+                for w_mod, upd in zip(weight_scaled_mod, miner_int_updates):
+                    clipped = int(upd[k]) % N  # Same encoding miners use
+                    S_mod = (S_mod + (w_mod * clipped)) % N
+
+                expected_point = safe_scalar_mul(G, S_mod)
+                if E_star != expected_point:
+                    print(f"[ERROR] Modular consistency failed at param {k}")
+                    print(f"  S_mod (sum w_mod*clipped mod N) = {S_mod}")
+                    print(f"  expected_point = {expected_point}")
+                    print(f"  E_star         = {E_star}")
+                    raise ValueError(f"Encrypted point mismatch for param {k}: check miner ciphertexts / pk_A / pk_TP / sk_FE / scale_weights.")
+            except ValueError:
+                raise  # Re-raise ValueError (the mismatch error)
+            except Exception as _ex:
+                # Only warn on non-critical errors (e.g., index errors if updates shape differs)
+                pass
+
+        # Compute dynamic bsgs_bound from signed S if miner_int_updates available
+        dynamic_bound = bsgs_bound
+        if miner_int_updates is not None:
+            try:
+                S_signed = 0
+                for w_raw, upd in zip(weight_scaled_raw, miner_int_updates):
+                    S_signed += int(w_raw) * int(upd[k])
+                dynamic_bound = max(1024, abs(S_signed) + 16)
+            except Exception:
+                pass  # Fall back to provided bsgs_bound
+
+        # Try positive BSGS with dynamic bound
+        val = bsgs_cached(E_star, dynamic_bound)
 
         if val < 0:
-            # Try negative fallback: compute -E_star and BSGS it
-            if E_star is None:
-                neg_val = bsgs_cached(None, bsgs_bound)
+            neg_E_star = None if E_star is None else safe_scalar_mul(E_star, (-1) % N)
+            val2 = bsgs_cached(neg_E_star, dynamic_bound)
+            if val2 >= 0:
+                val = -val2
             else:
-                neg_E_star = safe_scalar_mul(E_star, (-1) % N)
-                neg_val = bsgs_cached(neg_E_star, bsgs_bound)
+                raise ValueError(f"BSGS bound insufficient for param {k} (dynamic_bound={dynamic_bound})")
 
-            if neg_val >= 0:
-                val = -neg_val
-            else:
-                raise ValueError(f"BSGS bound insufficient for param {k}")
-
-        # Map signed representation (avoid huge mod-N wrapping)
+        # Map signed representation
         if val > N // 2:
             val -= N
 
@@ -267,18 +310,43 @@ def decrypt_aggregate_chunked(
 ) -> np.ndarray:
 
     L = len(ciphertexts_U[0])
+    # keep Python ints for weight scaling (no modulo here; used for S calc)
     weight_scaled = [int(round(w * scale_weights)) for w in weights_y]
+
+    def compute_chunk_bound_py(start, end):
+        # Compute S per-index using Python ints (no overflow)
+        max_abs_S = 0
+        for idx in range(start, end):
+            s_val = 0
+            # sum using Python ints
+            for w, upd in zip(weight_scaled, miner_int_updates):
+                s_val += int(w) * int(upd[idx])
+            abs_s = abs(s_val)
+            if abs_s > max_abs_S:
+                max_abs_S = abs_s
+
+        bound = max(max_abs_S + 16, 1024)
+        # cap to avoid runaway
+        capped = min(bound, max_chunk_bound_cap)
+        hit_cap = (bound > max_chunk_bound_cap)
+        return capped, max_abs_S, hit_cap
 
     def solve_chunk(start, end):
         chunk_cts = [miner[start:end] for miner in ciphertexts_U]
 
-        # compute exact S range for bound
-        S = np.zeros(end - start, dtype=np.int64)
-        for w, upd in zip(weight_scaled, miner_int_updates):
-            S += w * upd[start:end]
+        # Use Python-safe bound computation
+        bound, max_abs_S, hit_cap = compute_chunk_bound_py(start, end)
 
-        max_abs_S = int(np.max(np.abs(S))) if np.any(S) else 0
-        bound = min(max_chunk_bound_cap, max(max_abs_S + 16, 1024))
+        # diagnostic logging (remove or reduce in production)
+        print(f"[CHUNK] start={start} end={end} max_abs_S={max_abs_S} requested_bound={max(max_abs_S+16,1024)} used_bound={bound} hit_cap={hit_cap}")
+
+        if hit_cap:
+            # Helpful error: shows why BSGS might fail and suggests actions
+            raise ValueError(
+                f"Required BSGS bound {max_abs_S + 16} exceeds max_chunk_bound_cap "
+                f"{max_chunk_bound_cap} for chunk [{start}:{end}]. "
+                "Either increase max_chunk_bound_cap, reduce chunk_size, or quantize/clip updates."
+            )
 
         return (start, end, decrypt_aggregate(
             sk_FE, sk_A, pk_TP,
@@ -300,7 +368,6 @@ def decrypt_aggregate_chunked(
             recovered[start:end] = vec
 
     return recovered
-
 
 # =====================================================================================
 # Demo (local test)
@@ -340,7 +407,7 @@ if __name__ == "__main__":
         sk_FE, skA, pkTP,
         cts, weights,
         miner_int_updates=miners_updates,
-        chunk_size=128,
+        chunk_size=256,
         parallel=False
     )
 
