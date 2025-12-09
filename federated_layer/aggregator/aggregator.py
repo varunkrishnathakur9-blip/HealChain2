@@ -12,15 +12,19 @@ import logging
 from web3 import Web3
 from eth_account.messages import encode_defunct
 from integration.web3_client import Web3Client 
-from crypto.ndd_fe import key_gen, decrypt_aggregate
+
+# Crypto helpers: import decrypt_aggregate, decrypt_aggregate_chunked and key utilities
+from crypto.ndd_fe import key_gen, decrypt_aggregate, decrypt_aggregate_chunked, G, N, safe_scalar_mul, bsgs_cached
 from crypto.dgc import DGC 
+
 
 class Aggregator:
     def __init__(self, 
                  initial_model: np.ndarray, 
                  account_address: str, 
                  validation_set,
-                 max_rounds: int = 100):
+                 max_rounds: int = 100,
+                 scale_weights: int = 1000):
         
         # Generate Aggregator's keys using module-level function
         self.pk_A, self.sk_A = key_gen()
@@ -35,6 +39,9 @@ class Aggregator:
         self.round_ctr = 0
         self.sk_FE = None  # Functional key received from TP (M2)
         self._sk_FE_set = False  # Track if sk_FE was explicitly set
+
+        # global scale_weights that must be identical for miners and aggregator (task metadata)
+        self.scale_weights = scale_weights
         
         # --- FIX: Generate a local key for signing blocks in simulation ---
         # This prevents the need for os.environ variables and fixes the missing key error
@@ -67,7 +74,7 @@ class Aggregator:
         """Evaluates the new global model's accuracy on the validation set."""
         # Check if validation set is real data or string placeholder
         if isinstance(self.validation_set, str):
-             # Keep simulation mode
+             # Keep simulation mode 
              simulated_accuracy = 0.85 + (0.01 * self.round_ctr) + random.uniform(-0.005, 0.005)
              return min(0.99, simulated_accuracy)
         
@@ -99,26 +106,26 @@ class Aggregator:
         # Extract necessary components from submission tuple
         ciphertexts_U = [s[0] for s in valid_submissions]
         score_commits = [s[1] for s in valid_submissions]
-        
+
+        # extract public keys from submissions if available (expected position 2)
+        pk_miners = []
+        for s in valid_submissions:
+            if len(s) > 2 and s[2] is not None:
+                pk_miners.append(s[2])
+        # If pk_miners extracted, assert consistent lengths (order must match)
+        if pk_miners:
+            assert len(pk_miners) == len(ciphertexts_U), "pk_miners length mismatch with ciphertexts"
+            if miner_int_updates is not None:
+                assert len(miner_int_updates) == len(ciphertexts_U), "miner_int_updates length mismatch with ciphertexts"
+
         # 2. NDD-FE Decrypt and BSGS Recovery (Algorithm 4, Lines 15-26)
-        # Prefer chunked recovery to keep per-parameter BSGS bounds modest.
-        # `chunked_decrypt` will call `decrypt_aggregate` on slices of the
-        # parameter vector and estimate a safe `bsgs_bound` per chunk.
         try:
             original_L = len(ciphertexts_U[0])
         except Exception:
             raise ValueError("Invalid ciphertexts_U structure for decryption")
 
-        # 2. NDD-FE Decrypt and BSGS Recovery (Algorithm 4, Lines 15-26)
         # If miner plaintext integer updates are available (simulation mode),
         # compute the exact per-call bsgs_bound using Python big-int arithmetic
-        try:
-            from crypto.dgc import DGC as _DGC
-            max_int = _DGC().max_int
-        except Exception:
-            max_int = 1023
-        scale_weights = 1000
-
         def compute_exact_bsgs_bound(miner_int_updates, weights_y, scale_weights=1, margin=16, min_bound=1024):
             w_scaled = [int(round(w * scale_weights)) for w in weights_y]
             L = len(miner_int_updates[0])
@@ -133,7 +140,9 @@ class Aggregator:
             return bound, max_abs_S
 
         recovered_aggregate_vector = None
-        # If miner_int_updates provided, compute exact bound and try one-shot
+        scale_weights = self.scale_weights
+
+        # Attempt fast path: if miner plaintexts are available, compute exact bound and try one-shot decrypt
         if miner_int_updates is not None:
             try:
                 bsgs_bound, max_abs_S = compute_exact_bsgs_bound(miner_int_updates, weights_y, scale_weights=scale_weights)
@@ -146,97 +155,79 @@ class Aggregator:
                         ciphertexts_U=ciphertexts_U,
                         weights_y=weights_y,
                         scale_weights=scale_weights,
-                        bsgs_bound=bsgs_bound
+                        bsgs_bound=bsgs_bound,
+                        miner_int_updates=miner_int_updates
                     )
                 except ValueError as ve:
                     logging.warning(f"One-shot decrypt with exact bound {bsgs_bound} failed: {ve}")
-                    # If we have miner plaintexts, run per-parameter diagnostics to find root cause
-                    recovered_aggregate_vector = None
+
+                    # Run per-parameter diagnostics on the worst indices (helpful when debugging)
                     try:
-                        if miner_int_updates is not None:
-                            # import diagnostic helpers from ndd_fe
-                            from crypto.ndd_fe import safe_scalar_mul, G, N, bsgs_cached
+                        # Recompute S_list (signed ints) for diagnostics
+                        L = len(miner_int_updates[0])
+                        S_list = [0] * L
+                        w_scaled_raw = [int(round(w * scale_weights)) for w in weights_y]
+                        for i in range(len(miner_int_updates)):
+                            upd = miner_int_updates[i]
+                            w = w_scaled_raw[i]
+                            for idx in range(L):
+                                S_list[idx] += int(w) * int(upd[idx])
+                        abs_vals = [abs(v) for v in S_list]
+                        top_idxs = sorted(range(L), key=lambda i: abs_vals[i], reverse=True)[:6]
 
-                            # compute raw scaled weights
-                            w_scaled_raw = [int(round(w * scale_weights)) for w in weights_y]
-                            w_scaled_modN = [ws % N for ws in w_scaled_raw]
+                        # diagnostics: show expected vs actual points
+                        inv_sk_A = pow(self.sk_A, -1, N)
+                        global_mask = safe_scalar_mul(pk_TP, self.sk_FE)
 
-                            # compute S_list if not already computed
+                        for k in top_idxs:
                             try:
-                                S_list, _, _, _ = None, None, None, None
-                            except Exception:
-                                S_list = None
-
-                            # Recompute S_list here (Python-safe)
-                            L = len(miner_int_updates[0])
-                            S_list = [0] * L
-                            for i in range(len(miner_int_updates)):
-                                upd = miner_int_updates[i]
-                                w = w_scaled_raw[i]
-                                for idx in range(L):
-                                    S_list[idx] += int(w) * int(upd[idx])
-
-                            # choose a handful indices to inspect (worst first)
-                            abs_vals = [abs(v) for v in S_list]
-                            top_idxs = sorted(range(L), key=lambda i: abs_vals[i], reverse=True)[:6]
-
-                            # global mask and inv_sk_A
-                            from crypto.ndd_fe import safe_scalar_mul as _ssm
-                            global_mask = _ssm(pk_TP, self.sk_FE)
-                            inv_sk_A = pow(self.sk_A, -1, N)
-
-                            for k in top_idxs:
-                                try:
-                                    # rebuild agg from ciphertexts_U
-                                    agg = None
-                                    for Uik_list, wmod in zip(ciphertexts_U, w_scaled_modN):
+                                agg = None
+                                for Uik_list, wmod in zip(ciphertexts_U, [wr % N for wr in w_scaled_raw]):
+                                    Uik = None
+                                    try:
+                                        Uik = Uik_list[k]
+                                    except Exception:
                                         Uik = None
-                                        try:
-                                            Uik = Uik_list[k]
-                                        except Exception:
-                                            Uik = None
-                                        if Uik is None:
-                                            tmp = None
-                                        else:
-                                            tmp = Uik * wmod
-                                        agg = tmp if agg is None else (agg + tmp)
-
-                                    if global_mask is None:
-                                        E = agg
+                                    if Uik is None:
+                                        tmp = None
                                     else:
-                                        neg_global = _ssm(global_mask, (-1) % N)
-                                        E = agg if neg_global is None else (agg + neg_global)
+                                        tmp = Uik * wmod
+                                    agg = tmp if agg is None else (agg + tmp)
 
-                                    E_star = _ssm(E, inv_sk_A)
+                                if global_mask is None:
+                                    E = agg
+                                else:
+                                    neg_global = safe_scalar_mul(global_mask, (-1) % N)
+                                    E = agg if neg_global is None else (agg + neg_global)
 
-                                    expected_S = S_list[k]
-                                    expected_point = (expected_S % N) * G
+                                E_star = safe_scalar_mul(E, inv_sk_A)
 
-                                    logging.warning(f"[DIAG] k={k} expected_S={expected_S} (mod N={expected_S % N})")
-                                    logging.warning(f"[DIAG] expected_point={expected_point}")
-                                    logging.warning(f"[DIAG] E={E}")
-                                    logging.warning(f"[DIAG] E_star={E_star}")
-                                    logging.warning(f"[DIAG] E_star == expected_point? {E_star == expected_point}")
+                                expected_S = S_list[k]
+                                expected_point = (expected_S % N) * G
 
-                                    # run bsgs tests
-                                    try:
-                                        pos = bsgs_cached(E_star, bsgs_bound)
-                                    except Exception as _e:
-                                        pos = f"error:{_e}"
-                                    # negative test
-                                    try:
-                                        neg = bsgs_cached(_ssm(E_star, (-1) % N), bsgs_bound)
-                                    except Exception as _e:
-                                        neg = f"error:{_e}"
+                                logging.warning(f"[DIAG] k={k} expected_S={expected_S} (mod N={expected_S % N})")
+                                logging.warning(f"[DIAG] expected_point={expected_point}")
+                                logging.warning(f"[DIAG] E={E}")
+                                logging.warning(f"[DIAG] E_star={E_star}")
+                                logging.warning(f"[DIAG] E_star == expected_point? {E_star == expected_point}")
 
-                                    logging.warning(f"[DIAG] bsgs_cached positive -> {pos}, negative -> {neg} (bound={bsgs_bound})")
-                                except Exception as e_k:
-                                    logging.warning(f"[DIAG] failed inspecting k={k}: {e_k}")
+                                try:
+                                    pos = bsgs_cached(E_star, bsgs_bound)
+                                except Exception as _e:
+                                    pos = f"error:{_e}"
+                                try:
+                                    neg = bsgs_cached(safe_scalar_mul(E_star, (-1) % N), bsgs_bound)
+                                except Exception as _e:
+                                    neg = f"error:{_e}"
+
+                                logging.warning(f"[DIAG] bsgs_cached positive -> {pos}, negative -> {neg} (bound={bsgs_bound})")
+                            except Exception as e_k:
+                                logging.warning(f"[DIAG] failed inspecting k={k}: {e_k}")
                     except Exception as e_diag:
                         logging.warning(f"[DIAG] diagnostics failed: {e_diag}")
+
                     # Try chunked recovery as a robust fallback when one-shot fails
                     try:
-                        from crypto.ndd_fe import decrypt_aggregate_chunked
                         logging.info("[AGG] attempting chunked decrypt as fallback")
                         recovered_aggregate_vector = decrypt_aggregate_chunked(
                             self.sk_FE,
@@ -259,6 +250,12 @@ class Aggregator:
         # If we didn't recover yet, fall back to geometric retry (or chunked if available)
         if recovered_aggregate_vector is None:
             # conservative per-parameter worst-case magnitude estimation if plaintext not available
+            try:
+                from crypto.dgc import DGC as _DGC
+                max_int = _DGC().max_int
+            except Exception:
+                max_int = 1023
+
             weight_scaled_list = [int(round(w * scale_weights)) for w in weights_y]
             sum_abs_weight_scaled = sum(abs(w) for w in weight_scaled_list)
             max_abs_S = int(sum_abs_weight_scaled * max_int)
@@ -276,7 +273,8 @@ class Aggregator:
                         ciphertexts_U=ciphertexts_U,
                         weights_y=weights_y,
                         scale_weights=scale_weights,
-                        bsgs_bound=attempt_bound
+                        bsgs_bound=attempt_bound,
+                        miner_int_updates=miner_int_updates
                     )
                     break
                 except ValueError as ve:

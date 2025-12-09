@@ -7,7 +7,8 @@ FEATURES ADDED:
 2) Cached BSGS positive + negative fallback
 3) Chunked recovery wrapper (decrypt_aggregate_chunked)
 4) Optional parallel processing of chunks
-5) Backward compatibility with existing decrypt_aggregate()
+5) Robust modular consistency checks and Python big-int safety
+6) Backward compatibility with existing decrypt_aggregate()
 
 Dependencies:
     pip install tinyec numpy
@@ -50,6 +51,21 @@ def derive_ri_from_shared(shared_point, ctr: int, task_id: bytes) -> int:
         + task_id
     )
     return int.from_bytes(hashlib.sha256(payload).digest(), "big") % N
+
+
+def is_infinity(pt) -> bool:
+    """Return True if pt is the curve identity (point-at-infinity)."""
+    if pt is None:
+        return True
+    # tinyec sometimes uses object with x=None to represent infinity; handle both
+    return getattr(pt, "x", None) is None or getattr(pt, "y", None) is None
+
+
+def fmt_point(pt):
+    """Human-friendly representation for logging: 'Inf' or (x,y)."""
+    if is_infinity(pt):
+        return "Inf"
+    return f"({int(pt.x)}, {int(pt.y)})"
 
 
 def safe_scalar_mul(point, scalar):
@@ -131,6 +147,9 @@ def _point_key(pt):
 
 
 def _precompute_babysteps(bound: int):
+    """
+    Precompute baby steps once for given bound and cache by m = ceil(sqrt(bound))
+    """
     m = int(math.ceil(math.sqrt(bound)))
     if m in _BABY_CACHE:
         return _BABY_CACHE[m], m
@@ -152,11 +171,7 @@ def bsgs_cached(pt, bound: int):
     BSGS with safe infinity handling.
     Returns integer x in [0,bound) or -1.
     """
-    """
-    Return x in [0,bound) such that x*G == pt, or -1 if not found.
-    Handles identity (None) and avoids unsafe tinyec states.
-    """
-    if pt is None or getattr(pt, "x", None) is None or getattr(pt, "y", None) is None:
+    if is_infinity(pt):
         return 0
 
     baby, m = _precompute_babysteps(bound)
@@ -167,8 +182,7 @@ def bsgs_cached(pt, bound: int):
 
     current = pt
     for i in range(m):
-        # if current became invalid, stop early
-        if current is None or getattr(current, "x", None) is None or getattr(current, "y", None) is None:
+        if is_infinity(current):
             key = (None, None)
         else:
             key = _point_key(current)
@@ -187,13 +201,14 @@ def bsgs_cached(pt, bound: int):
         try:
             current = current + neg_mG
         except Exception:
+            # avoid infinite recursion / mod inv problems
             return -1
 
     return -1
 
 
 # =====================================================================================
-#                     decrypt_aggregate — WITH NEGATIVE FALLBACK
+#                     decrypt_aggregate — WITH NEGATIVE FALLBACK & CONSISTENCY
 # =====================================================================================
 def decrypt_aggregate(
     sk_FE: int,
@@ -205,6 +220,12 @@ def decrypt_aggregate(
     bsgs_bound: int = 1 << 20,
     miner_int_updates: List[np.ndarray] = None
 ) -> np.ndarray:
+    """
+    Robust decrypt_aggregate:
+    - uses safe scalar ops
+    - performs modular consistency check (if miner_int_updates provided)
+    - uses cached BSGS with negative fallback
+    """
 
     num_params = len(ciphertexts_U[0])
     # signed scaled weights (Python ints)
@@ -250,16 +271,23 @@ def decrypt_aggregate(
                     S_mod = (S_mod + (w_mod * clipped)) % N
 
                 expected_point = safe_scalar_mul(G, S_mod)
-                if E_star != expected_point:
+
+                # treat any representation of infinity as equal
+                if is_infinity(E_star) and is_infinity(expected_point):
+                    equal = True
+                else:
+                    equal = (E_star == expected_point)
+
+                if not equal:
                     print(f"[ERROR] Modular consistency failed at param {k}")
                     print(f"  S_mod (sum w_mod*clipped mod N) = {S_mod}")
-                    print(f"  expected_point = {expected_point}")
-                    print(f"  E_star         = {E_star}")
+                    print(f"  expected_point = {fmt_point(expected_point)}")
+                    print(f"  E_star         = {fmt_point(E_star)}")
                     raise ValueError(f"Encrypted point mismatch for param {k}: check miner ciphertexts / pk_A / pk_TP / sk_FE / scale_weights.")
             except ValueError:
                 raise  # Re-raise ValueError (the mismatch error)
-            except Exception as _ex:
-                # Only warn on non-critical errors (e.g., index errors if updates shape differs)
+            except Exception:
+                # Non-critical exception in diagnostic should not block
                 pass
 
         # Compute dynamic bsgs_bound from signed S if miner_int_updates available
@@ -294,7 +322,7 @@ def decrypt_aggregate(
 
 
 # =====================================================================================
-#                         CHUNKED RECOVERY WRAPPER
+#                         CHUNKED RECOVERY WRAPPER (PATCHED)
 # =====================================================================================
 def decrypt_aggregate_chunked(
     sk_FE: int,
@@ -308,6 +336,12 @@ def decrypt_aggregate_chunked(
     max_chunk_bound_cap: int = 1 << 28,
     parallel: bool = False,
 ) -> np.ndarray:
+    """
+    Recover entire vector in chunks.
+    - Computes exact per-chunk bound from miners' integer deltas (Python ints)
+    - Uses cached BSGS for big speedup.
+    - Optional parallel chunk solving.
+    """
 
     L = len(ciphertexts_U[0])
     # keep Python ints for weight scaling (no modulo here; used for S calc)
@@ -348,11 +382,15 @@ def decrypt_aggregate_chunked(
                 "Either increase max_chunk_bound_cap, reduce chunk_size, or quantize/clip updates."
             )
 
+        # pass the per-chunk miner updates slice so decrypt_aggregate can do consistency and dynamic bound
+        miner_updates_slice = [upd[start:end] for upd in miner_int_updates]
+
         return (start, end, decrypt_aggregate(
             sk_FE, sk_A, pk_TP,
             chunk_cts, weights_y,
             scale_weights=scale_weights,
-            bsgs_bound=bound
+            bsgs_bound=bound,
+            miner_int_updates=miner_updates_slice
         ))
 
     chunks = [(i, min(L, i + chunk_size)) for i in range(0, L, chunk_size)]
@@ -368,6 +406,7 @@ def decrypt_aggregate_chunked(
             recovered[start:end] = vec
 
     return recovered
+
 
 # =====================================================================================
 # Demo (local test)
